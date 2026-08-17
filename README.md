@@ -10,7 +10,7 @@ NyaaReader is a cozy, self-hosted reader for Japanese / Chinese / Korean web nov
 
 ## ✨ What Nyaa can do
 
-- 📖 **Multi-site scraping (plugin system)** — site-specific plugins (JJWXC, Qidian, 17K, Kakuyomu, AlphaPolis, Novelpia, Munpia, Naver, Ridibooks, and a few private ones) plus **`AIScraper`**, an LLM-powered generic fallback that extracts novels/chapters from *any* site without a plugin (using the same relay chain that translates). To add a site: copy `scrapers/example_plugin.py`, implement two methods, register your domain — done. Remove it to fall back to AI extraction (see `make_public.py` for the AI-only public build).
+- 📖 **Multi-site scraping (plugin system)** — site-specific plugins (JJWXC, Qidian, 17K, Kakuyomu, AlphaPolis, Novelpia, Munpia, Naver, Ridibooks, and a few private ones) plus **`AIScraper`**, an LLM-powered generic fallback that extracts novels/chapters from *any* site without a plugin (using the same relay chain that translates). To add a site: copy `scrapers/example_plugin.py`, implement two methods, register your domain — done. Remove it to fall back to AI extraction. (Your private site plugins live in a separate private vault and are overlaid here at build time by `combine.py`.)
 - 🌐 **AI translation, one key** — `deepseek-v4-flash` (best value) → `gpt-5.6-luna` (quality), both on a **single** relay key (opencode.ai zen). The quality tier kicks in only when the fast one fails. (Blind-benchmarked 10 models for score vs. cost before wiring.)
 - 🧠 **Per-novel AI memory** — Nyaa remembers characters, terms, and plot across chapters, with **auto-compaction** so a 500+ chapter novel stays consistent without runaway cost.
 - 🔒 **Editable glossary with locks** — keep names consistent (fix that one character you can't stand being retranslated differently). Locked entries are fed to the translator as **mandatory**.
@@ -89,7 +89,6 @@ NyaaReader/
 │   ├── example_plugin.py  # Template for writing your own site plugin
 │   └── chinese.py / japanese.py / korean.py  # site plugins
 ├── combine.py          # Overlays your private plugins from the private vault at build time
-├── make_public.py      # (legacy) Builds a clean public tree — superseded by the two-folder split
 ├── LICENSE             # MIT — attribution required (credit this repo)
 ├── Dockerfile
 ├── docker-compose.yml  # Secrets via ${VAR} from root .env
