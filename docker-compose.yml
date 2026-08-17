@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  nyaa-reader:
+    build: .
+    container_name: nyaa-reader
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # Persist SQLite database
+      - ./data:/app/data
+      # Mount frontend (so you can edit HTML/CSS/JS without rebuilding)
+      - ./frontend:/app/frontend
+    environment:
+      - FALLBACK_API_KEY=${FALLBACK_API_KEY}
+      - FALLBACK_BASE_URL=https://opencode.ai/zen/go/v1
+      - FALLBACK_MODEL=deepseek-v4-flash
+      - FALLBACK_MODEL_2=gpt-5.6-luna
+      - HOST=0.0.0.0
+      - PORT=8080
+      - DATABASE_URL=sqlite:////app/data/novel_reader.db
+      - TZ=Asia/Jakarta
+      # Set COOKIE_SECURE=1 when serving behind HTTPS so the session cookie
+      # is only sent over TLS (prevents sniffing). Leave unset for plain-HTTP local dev.
+      - COOKIE_SECURE=${COOKIE_SECURE:-}
+    # Auto-fetch first chapters after adding a novel

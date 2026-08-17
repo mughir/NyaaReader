@@ -1,0 +1,51 @@
+# Secrets — never commit
+.env
+backend/.env
+*.env
+*.env.*
+
+# Data & databases
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Benchmark scratch
+.tmpprobe_*.txt
+
+# Node
+node_modules/
+
+# Private scraper plugins — live in the separate private vault (nyaareader-scrapper)
+# and are overlaid here only at build time by combine.py. NEVER commit these to the
+# public GitHub repo.
+scrapers/private_*.py
+scrapers/_test_*.py
+
+# Benchmark scratch — internal pricing/relay analysis, kept OUT of the public repo
+benchmark_*.py
+benchmark_*.json
+rate_models.py
+summarize_bench.py
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Session notes (local only — never commit)
+
+# Session notes (local only — never commit). README.md stays tracked.
+*.md
+!README.md
+
+# local planning docs
+.hermes/

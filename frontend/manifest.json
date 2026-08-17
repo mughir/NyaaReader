@@ -1,0 +1,23 @@
+{
+  "name": "NyaaReader",
+  "short_name": "NyaaReader",
+  "description": "Self-hosted AI webnovel reader — translate, organize and read web novels.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#14131a",
+  "theme_color": "#6d5ae0",
+  "icons": [
+    {
+      "src": "/static/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/favicon.ico",
+      "sizes": "16x16 32x32 48x48 64x64",
+      "type": "image/x-icon",
+      "purpose": "any"
+    }
+  ]
+}
