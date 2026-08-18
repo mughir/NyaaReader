@@ -15,6 +15,10 @@ engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
     echo=False,
+    pool_size=10,
+    max_overflow=20,
+    pool_timeout=30,
+    pool_pre_ping=True,
 )
 
 # SQLite concurrency safety: WAL lets readers never block writers; busy_timeout
@@ -22,7 +26,7 @@ engine = create_engine(
 if "sqlite" in DATABASE_URL:
     with engine.connect() as conn:
         conn.execute(text("PRAGMA journal_mode=WAL"))
-        conn.execute(text("PRAGMA busy_timeout=5000"))
+        conn.execute(text("PRAGMA busy_timeout=30000"))
         conn.execute(text("PRAGMA synchronous=NORMAL"))
         conn.commit()
 
