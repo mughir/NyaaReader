@@ -178,7 +178,8 @@ async def auth_guard(request: Request, call_next):
     path = request.url.path
     # always-open paths
     if (path in ("/login", "/api/health") or path.startswith("/static/")
-            or path == "/api/auth/login" or path == "/api/auth/logout"):
+            or path == "/api/auth/login" or path == "/api/auth/logout"
+            or path == "/api/auth/status"):
         return await call_next(request)
     if not _auth_enabled():
         return await call_next(request)
@@ -457,6 +458,15 @@ async def _create_novel_from_url(db, source_url: str, target_language: str,
         db.add(chapter)
 
     db.commit()
+
+    # Reconcile: the scraper's total_chapters estimate can disagree with the
+    # actual chapter rows we just created. Derive the real count so the header
+    # never drifts from ground truth (audit #18).
+    actual = db.query(Chapter).filter(Chapter.novel_id == novel.id).count()
+    if novel.total_chapters != actual:
+        novel.total_chapters = actual
+        db.commit()
+
     db.refresh(novel)
 
     # Background task to fetch first few chapters
@@ -536,7 +546,11 @@ async def fetch_initial_chapters(novel_id: int, auto_translate: bool):
                     chapter.original_content = ch_data.content
                     chapter.word_count = ch_data.word_count
                     if translator and auto_translate:
-                        result = translator.translate_chapter(
+                        # Run the blocking relay call off the event loop — a single
+                        # chapter can take minutes; inline here it would freeze every
+                        # other request/task while a novel is added.
+                        result = await asyncio.to_thread(
+                            translator.translate_chapter,
                             ch_data.content,
                             novel.original_language,
                             novel.target_language,
@@ -1002,7 +1016,7 @@ def check_updates_bg(novel_id: int):
         novel = db.query(Novel).filter(Novel.id == novel_id).first()
         if not novel or novel.source_site == "manual":
             return
-        from scrapers import get_scraper_for_url, get_novel_info
+        from scrapers import get_scraper_for_url
         scraper = get_scraper_for_url(novel.source_url)
         if not scraper:
             logger.warning(f"check-updates: no scraper for {novel.source_url}")
@@ -2456,8 +2470,10 @@ async def delete_backup(name: str):
     the newest `backup_keep`, so this lets you drop old ones by hand)."""
     import os as _os
     safe = _os.path.basename(name)
+    if safe in (".", "..") or not safe:
+        raise HTTPException(status_code=400, detail="Invalid backup name")
     path = _os.path.join(_backup_dir(), safe)
-    if not _os.path.exists(path):
+    if not _os.path.exists(path) or not _os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Backup not found")
     try:
         _os.remove(path)

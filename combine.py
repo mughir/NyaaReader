@@ -28,11 +28,14 @@ REPO = Path(__file__).resolve().parent        # the public NyaaReader tree
 DEFAULT_VAULT = REPO.parent / "nyaareader-scrapper"
 
 # Files that live in the private vault and must be overlaid onto the public
-# scrapers/ at build time. (Prefix match: any of these under scrapers/)
-PRIVATE_MARKERS = ("private_", "_test_")
+# scrapers/ at build time. (Prefix match: any of these under scrapers/.)
+# NOTE: only private_* plugins are overlaid — _test_*.py (which runs live
+# network tests on import) must NEVER be copied into a build.
+PRIVATE_MARKERS = ("private_",)
 
 def _private_files(vault: Path) -> list:
-    """All private scraper files in the vault's scrapers/ dir."""
+    """All private scraper PLUGIN files in the vault's scrapers/ dir
+    (excludes _test_* which are dev-only and must not ship)."""
     scrapers = vault / "scrapers"
     if not scrapers.is_dir():
         print(f"!! no {scrapers.name}/ in vault {vault}")
