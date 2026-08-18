@@ -11,10 +11,21 @@ from typing import Literal
 import os
 from dotenv import load_dotenv
 import logging
+import urllib.error
 
 logger = logging.getLogger("novel-reader.translator")
 
 load_dotenv()
+
+
+class RelayAuthError(RuntimeError):
+    """The relay rejected the credential permanently (HTTP 401/403 — key
+    disabled, invalid, or forbidden on the router dashboard).
+
+    Raised so callers can STOP work immediately (don't retry, don't walk the
+    same-key fallback chain, and don't fail every chapter of a batch) and
+    surface a clear 'check your key' message instead."""
+
 
 
 @dataclass
@@ -631,10 +642,18 @@ class OpenAIRelayTranslator(GeminiTranslator):
             raise ValueError("Fallback API key required (FALLBACK_API_KEY)")
 
     def _generate(self, prompt: str) -> str:
-        """POST the prompt to the OpenAI-compatible relay (retries once on empty)."""
-        # The relay's models can return empty content transiently — retry once.
+        """POST the prompt to the OpenAI-compatible relay.
+
+        Retries transient failures (empty reply, 429 rate-limit, 5xx) with a
+        short exponential backoff. Hard failures (401/403 auth) raise
+        RelayAuthError immediately so callers can stop work instead of
+        hammering a dead key."""
+        import time as _time
         last_err = None
-        for attempt in range(2):
+        for attempt in range(3):
+            if attempt > 0:
+                # backoff: 2s, 4s for transient (rate-limit / server) errors
+                _time.sleep(2 * attempt)
             payload = {
                 "model": self.model_name,
                 "messages": [{"role": "user", "content": prompt}],
@@ -664,6 +683,16 @@ class OpenAIRelayTranslator(GeminiTranslator):
                     return content
                 last_err = "empty content from relay"
                 logger.warning(f"relay returned empty content (attempt {attempt + 1})")
+            except urllib.error.HTTPError as e:
+                # 401/403 = key disabled/invalid on the router dashboard — a
+                # PERMANENT failure. Don't retry, don't fall back (same key),
+                # just stop so a batch doesn't fail every chapter.
+                if e.code in (401, 403):
+                    logger.error(f"relay auth rejected (HTTP {e.code}) — key disabled or invalid")
+                    raise RelayAuthError(f"Relay rejected the API key (HTTP {e.code}). "
+                                         f"Check the key in the AI router dashboard / Settings.")
+                last_err = f"relay HTTP {e.code}"
+                logger.warning(f"relay call failed (attempt {attempt + 1}): HTTP {e.code}")
             except Exception as e:
                 last_err = str(e)
                 logger.warning(f"relay call failed (attempt {attempt + 1}): {e}")
@@ -697,6 +726,11 @@ class FallbackTranslator:
                 if getattr(result, "success", True):
                     return result
                 last_error = getattr(result, "error", None) or "success=False"
+            except RelayAuthError as e:
+                # Key rejected permanently — the fallback chain shares the SAME
+                # key, so don't try them. Propagate so callers stop work now.
+                logger.error(f"Relay auth failure on translator #{i}: {e}")
+                raise
             except Exception as e:
                 last_error = str(e)
             if i < len(chain) - 1:

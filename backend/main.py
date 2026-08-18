@@ -20,7 +20,7 @@ logger = logging.getLogger("novel-reader")
 
 from database import init_db, get_db_session
 from models import Novel, Chapter, ReadingProgress, NovelSettings, ScrapingLog, NovelMemory, Bookmark, DiaryEntry
-from translator import get_translator, TranslationResult, MemoryContext
+from translator import get_translator, TranslationResult, MemoryContext, RelayAuthError
 from scrapers import get_scraper_for_url, auto_detect_and_scrape
 
 from pathlib import Path
@@ -930,6 +930,11 @@ def translate_to_end_bg(novel_id: int):
                     raise RuntimeError("fetch failed — no content")
                 _translate_chapter_bg(novel_id, ch.chapter_number, "balanced")
                 _bump_batch(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+            except RelayAuthError as e:
+                # Relay key disabled/invalid — stop the batch NOW instead of
+                # failing every remaining chapter.
+                logger.error(f"translate-to-end stopped: relay key rejected ({e})")
+                break
             except Exception as e:
                 logger.warning(f"translate-to-end ch{ch.chapter_number} failed: {e}")
                 db.rollback()
@@ -985,6 +990,9 @@ def retranslate_match_bg(novel_id: int, needle: str):
             try:
                 _translate_chapter(db, ch, quality="balanced", force=True)
                 _bump_batch(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+            except RelayAuthError as e:
+                logger.error(f"match-retranslate stopped: relay key rejected ({e})")
+                break
             except Exception as e:
                 logger.warning(f"match-retranslate ch{ch.chapter_number} failed: {e}")
                 db.rollback()
@@ -1069,6 +1077,9 @@ def check_updates_bg(novel_id: int):
                 if ch.original_content:
                     _translate_chapter_bg(novel_id, ch.chapter_number, "balanced")
                 _bump_batch(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+            except RelayAuthError as e:
+                logger.error(f"check-updates translate stopped: relay key rejected ({e})")
+                break
             except Exception as e:
                 logger.warning(f"check-updates translate ch{ch.chapter_number} failed: {e}")
         _clear_batch(novel_id)
@@ -1608,6 +1619,9 @@ def _retranslate_bg(novel_id: int):
             try:
                 _translate_chapter(db, ch, quality="balanced", force=True)
                 _bump_batch(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+            except RelayAuthError as e:
+                logger.error(f"retranslate stopped: relay key rejected ({e})")
+                break
             except Exception as e:
                 logger.warning(f"retranslate ch{ch.chapter_number} failed: {e}")
                 db.rollback()
@@ -2248,6 +2262,9 @@ def _retry_failed_bg(novel_id: int):
                         ch.last_error = ""
                         db.commit()
                 _bump_batch(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+            except RelayAuthError as e:
+                logger.error(f"retry-failed stopped: relay key rejected ({e})")
+                break
             except Exception as e:
                 logger.warning(f"retry-failed ch{ch.chapter_number}: {e}")
                 db.rollback()
@@ -2710,6 +2727,9 @@ def translate_ahead_bg(novel_id: int, after_chapter: int, count: int = 5):
                     break
                 _translate_chapter_bg(novel_id, ch.chapter_number, "balanced")
                 _bump_batch(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+            except RelayAuthError as e:
+                logger.error(f"translate-ahead stopped: relay key rejected ({e})")
+                break
             except Exception as e:
                 logger.warning(f"translate-ahead ch{ch.chapter_number} failed: {e}")
         _clear_batch(novel_id)
@@ -3241,6 +3261,11 @@ def _translate_chapter_bg(novel_id: int, chapter_number: int, quality: str = "ba
                     chapter.last_error = str(e.detail)[:500]
                     db.commit()
                     logger.warning(f"bg translate {novel_id}/{chapter_number}: {e.detail}")
+                except RelayAuthError as e:
+                    # Key cancelled/invalid on the router dashboard — PERMANENT.
+                    # Don't record per-chapter errors; stop the whole batch now.
+                    logger.error(f"bg translate {novel_id}/{chapter_number}: {e}")
+                    raise
                 except Exception as e:
                     chapter.last_error = str(e)[:500]
                     db.commit()
