@@ -193,7 +193,7 @@
       <label class="cfg-label"><span class="cfg-label-text">Relay base URL</span>
         <span class="status-badge" :class="cfg.fallback_base_url ? 'st-set' : 'st-unset'">{{ cfg.fallback_base_url ? 'Set ✓' : 'Not set' }}</span>
       </label>
-      <input type="text" v-model="cfg.fallback_base_url" class="cfg-input long" placeholder="https://opencode.ai/zen/go/v1">
+      <input type="text" v-model="cfg.fallback_base_url" class="cfg-input long" placeholder="https://api.relay.example.com/v1">
       <label class="cfg-label"><span class="cfg-label-text">Model (tier 1 — best value)</span>
         <span class="status-badge" :class="cfg.fallback_model ? 'st-set' : 'st-unset'">{{ cfg.fallback_model ? 'Set ✓' : 'Required' }}</span>
       </label>

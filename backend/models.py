@@ -203,7 +203,7 @@ class AppConfig(Base):
     id = Column(Integer, primary_key=True)      # always 1 (singleton row)
     gemini_api_key = Column(String(500), default="")
     fallback_api_key = Column(String(500), default="")
-    fallback_base_url = Column(String(500), default="https://opencode.ai/zen/go/v1")
+    fallback_base_url = Column(String(500), default="https://api.relay.example.com/v1")
     fallback_model = Column(String(100), default="deepseek-v4-flash")
     fallback_model_2 = Column(String(100), default="gpt-5.6-luna")
     backup_enabled = Column(Boolean, default=True)

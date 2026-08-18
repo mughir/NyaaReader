@@ -11,7 +11,7 @@ NyaaReader is a cozy, self-hosted reader for Japanese / Chinese / Korean web nov
 ## ✨ What Nyaa can do
 
 - 📖 **Multi-site scraping (plugin system)** — site-specific plugins (JJWXC, Qidian, 17K, Kakuyomu, AlphaPolis, Novelpia, Munpia, Naver, Ridibooks, and a few private ones) plus **`AIScraper`**, an LLM-powered generic fallback that extracts novels/chapters from *any* site without a plugin (using the same relay chain that translates). To add a site: copy `scrapers/example_plugin.py`, implement two methods, register your domain — done. Remove it to fall back to AI extraction. (Your private site plugins live in a separate private vault and are overlaid here at build time by `combine.py`.)
-- 🌐 **AI translation, one key** — `deepseek-v4-flash` (best value) → `gpt-5.6-luna` (quality), both on a **single** relay key (opencode.ai zen). The quality tier kicks in only when the fast one fails. (Blind-benchmarked 10 models for score vs. cost before wiring.)
+- 🌐 **AI translation, one key** — `deepseek-v4-flash` (best value) → `gpt-5.6-luna` (quality), both on a **single** relay key. The quality tier kicks in only when the fast one fails. (Blind-benchmarked 10 models for score vs. cost before wiring.)
 - 🧠 **Per-novel AI memory** — Nyaa remembers characters, terms, and plot across chapters, with **auto-compaction** so a 500+ chapter novel stays consistent without runaway cost.
 - 🔒 **Editable glossary with locks** — keep names consistent (fix that one character you can't stand being retranslated differently). Locked entries are fed to the translator as **mandatory**.
 - 🚀 **Translate-ahead** — open a chapter and the next raw ones quietly fetch+translate in the background, ready when you scroll to them. Prefer to read the whole thing now? **Translate-to-end** backfills the rest.
@@ -34,9 +34,9 @@ NyaaReader is a cozy, self-hosted reader for Japanese / Chinese / Korean web nov
 
 1. **Drop in your relay key** — create `.env` at the project root (gitignored):
    ```env
-   FALLBACK_API_KEY=YOUR_RELAY_KEY   # opencode.ai zen — the ONE key for everything
+   FALLBACK_API_KEY=YOUR_RELAY_KEY   # single relay key for everything
    ```
-   Grab a key at opencode.ai. Single-provider chain: `deepseek-v4-flash` → `gpt-5.6-luna`.
+   Grab a key at your relay provider. Single-provider chain: `deepseek-v4-flash` → `gpt-5.6-luna`.
 
 2. **Start Nyaa:**
    ```bash
@@ -145,7 +145,7 @@ Interactive API docs: http://localhost:8080/docs
 
 - **Tier 1:** `deepseek-v4-flash` — best value (78 score / ~$0.00085 per chapter).
 - **Tier 2:** `gpt-5.6-luna` — quality (85 / ~$0.00276), engages only when tier 1 fails.
-- **Single key:** both tiers use one `FALLBACK_API_KEY` (opencode.ai zen relay).
+- **Single key:** both tiers use one `FALLBACK_API_KEY` (relay).
 - Config in env: `FALLBACK_MODEL`, `FALLBACK_MODEL_2` (in `.env` / `docker-compose.yml`).
 
 ---

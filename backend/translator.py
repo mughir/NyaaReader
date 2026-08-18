@@ -633,7 +633,7 @@ class OpenAIRelayTranslator(GeminiTranslator):
     ):
         # A base class invariant is that a `model` attribute + `pricing` exist.
         self.api_key = api_key or os.getenv("FALLBACK_API_KEY")
-        self.base_url = (base_url or os.getenv("FALLBACK_BASE_URL") or "https://opencode.ai/zen/go/v1").rstrip("/")
+        self.base_url = (base_url or os.getenv("FALLBACK_BASE_URL") or "https://api.relay.example.com/v1").rstrip("/")
         self.model_name = model or os.getenv("FALLBACK_MODEL") or "deepseek-v4-flash"
         self.temperature = temperature
         self.model = None  # not used; kept for interface parity
@@ -666,7 +666,7 @@ class OpenAIRelayTranslator(GeminiTranslator):
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {self.api_key}",
-                    # Required by the opencode.ai relay (403 without these)
+                    # Required by the relay (403 without these)
                     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
                     "X-Title": "Hermes Agent",
                     "User-Agent": "HermesAgent/3.1.0",
@@ -784,7 +784,7 @@ def get_translator(
     global _translator_instance
     if _translator_instance is None:
         relay_key = api_key or os.getenv("FALLBACK_API_KEY")
-        base_url = os.getenv("FALLBACK_BASE_URL") or "https://opencode.ai/zen/go/v1"
+        base_url = os.getenv("FALLBACK_BASE_URL") or "https://api.relay.example.com/v1"
         primary_model = model or os.getenv("FALLBACK_MODEL") or "deepseek-v4-flash"
         try:
             primary = OpenAIRelayTranslator(

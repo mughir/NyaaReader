@@ -2349,7 +2349,7 @@ def _get_config():
             cfg = AppConfig(id=1)
             cfg.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
             cfg.fallback_api_key = os.getenv("FALLBACK_API_KEY", "")
-            cfg.fallback_base_url = os.getenv("FALLBACK_BASE_URL", "https://opencode.ai/zen/go/v1")
+            cfg.fallback_base_url = os.getenv("FALLBACK_BASE_URL", "https://api.relay.example.com/v1")
             cfg.fallback_model = os.getenv("FALLBACK_MODEL", "deepseek-v4-flash")
             cfg.fallback_model_2 = os.getenv("FALLBACK_MODEL_2", "gpt-5.6-luna")
             db.add(cfg)
@@ -2468,7 +2468,7 @@ async def config_health_check(payload: dict = None):
     p = payload or {}
     key = (p.get("api_key") or _os.getenv("FALLBACK_API_KEY", "")).strip()
     base = (p.get("base_url") or _os.getenv("FALLBACK_BASE_URL", "") or
-            "https://opencode.ai/zen/go/v1").strip().rstrip("/")
+            "https://api.relay.example.com/v1").strip().rstrip("/")
     model1 = (p.get("model") or "").strip()
     model2 = (p.get("model_2") or "").strip()
 
