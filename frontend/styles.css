@@ -476,6 +476,10 @@ body.toolbar-hidden .reader-toolbar { transform: translateY(-100%); opacity: 0; 
 .status-badge.st-set { color: var(--ok); background: rgba(21,128,61,.09); border-color: rgba(21,128,61,.35); }
 .status-badge.st-unset { color: var(--text-dim); }
 .backup-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--border); }
+/* backup rows reuse .bm-item for container styling — neutralize the bookmark
+   absolute-positioned danger button so it doesn't overlay the row.
+   (higher specificity than .bm-item .btn.danger.tiny) */
+.bm-item .backup-row .btn, .bm-item .backup-row .btn.danger.tiny { position: static; }
 .save-btn.saved { background: var(--ok); }
 .cover { position: relative; display: flex; align-items: center; justify-content: center; min-height: 140px; color: #fff; }
 .cover-initial { font-size: 52px; font-weight: 700; text-shadow: 0 2px 8px rgba(0,0,0,.4); }

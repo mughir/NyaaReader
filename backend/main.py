@@ -2436,6 +2436,62 @@ async def put_config(payload: dict, db: Session = Depends(get_db_session)):
     return {"status": "ok"}
 
 
+@app.post("/api/config/health-check")
+async def config_health_check(payload: dict = None):
+    """Verify relay credentials before saving (Settings save-time check).
+
+    Step 1 — key + base URL: GET {base_url}/models with the key.
+    Step 2 — model names: each must appear in the returned model list.
+
+    Returns per-field validity so the frontend can save the good parts and
+    clear only a bad model name (never the whole config).
+    """
+    import os as _os
+    import urllib.request, json as _json, urllib.error
+    p = payload or {}
+    key = (p.get("api_key") or _os.getenv("FALLBACK_API_KEY", "")).strip()
+    base = (p.get("base_url") or _os.getenv("FALLBACK_BASE_URL", "") or
+            "https://opencode.ai/zen/go/v1").strip().rstrip("/")
+    model1 = (p.get("model") or "").strip()
+    model2 = (p.get("model_2") or "").strip()
+
+    key_ok = True
+    available = []
+    url = f"{base}/models"
+    try:
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {key}",
+            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+            "X-Title": "Hermes Agent",
+            "User-Agent": "HermesAgent/3.1.0",  # relay 403s without it
+        })
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = _json.loads(resp.read().decode())
+        # model list may be data[0]["id"] (OpenAI shape) or flat list of ids/objects
+        lst = data if isinstance(data, list) else data.get("data", [])
+        available = [m.get("id") if isinstance(m, dict) else str(m) for m in lst]
+    except Exception as e:
+        key_ok = False
+        return {"key_ok": False, "message": f"Could not reach relay at {base}: {e}",
+                "models": {"model": False, "model_2": False}}
+
+    def valid(name):
+        if not name:
+            return True  # blank tier 2 is allowed; blank model1 handled by caller
+        n = name.strip().lower()
+        return any(a.lower() == n for a in available) or any(n in a.lower() for a in available)
+
+    m1_ok = valid(model1)
+    m2_ok = valid(model2) if model2 else True
+    message = "OK"
+    if not m1_ok:
+        message = f"Model '{model1}' not found on relay (cleared)"
+    elif not m2_ok:
+        message = f"Model 2 '{model2}' not found on relay (cleared)"
+    return {"key_ok": True, "models": {"model": m1_ok, "model_2": m2_ok},
+            "available_count": len(available), "message": message}
+
+
 @app.post("/api/backup")
 async def backup_now():
     """Manual backup trigger."""

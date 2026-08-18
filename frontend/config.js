@@ -73,6 +73,39 @@
       }
       async function save() {
         saving.value = true; msg.value = ""; err.value = "";
+        // ---- Health-check BEFORE saving ----
+        // Step 1: key + base URL reach the relay. Step 2: model names exist.
+        // If key/base fail, abort (nothing saved). If a model is wrong, clear it
+        // and save the rest.
+        try {
+          const hc = await fetch("/api/config/health-check", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              api_key: cfg.value.fallback_api_key || undefined,
+              base_url: cfg.value.fallback_base_url,
+              model: cfg.value.fallback_model,
+              model_2: cfg.value.fallback_model_2,
+            }),
+          }).then(r => r.json()).catch(() => null);
+          if (hc && hc.key_ok === false) {
+            err.value = hc.message || "Relay health check failed";
+            saving.value = false;
+            return;
+          }
+          if (hc && hc.models) {
+            if (!hc.models.model && cfg.value.fallback_model) {
+              err.value = `Model "${cfg.value.fallback_model}" was not found on the relay — cleared. Re-check the name.`;
+              cfg.value.fallback_model = "";
+              cfg.fallback_model = "";
+            } else if (cfg.value.fallback_model_2 && hc.models.model_2 === false) {
+              err.value = `Model 2 "${cfg.value.fallback_model_2}" was not found on the relay — cleared.`;
+              cfg.value.fallback_model_2 = "";
+              cfg.fallback_model_2 = "";
+            }
+          }
+        } catch (e) { /* health-check non-fatal on network error */ }
+
         const body = {
           fallback_base_url: cfg.value.fallback_base_url,
           fallback_model: cfg.value.fallback_model,
@@ -157,17 +190,19 @@
       <p class="cfg-hint">Single key for the whole chain — deepseek-v4-flash &amp; gpt-5.6-luna.</p>
       <input type="password" v-model="cfg.fallback_api_key" placeholder="Leave empty to keep current key"
              class="cfg-input long" autocomplete="off">
-    </div>
-
-    <h2 class="section-title"><svg class="ic"><use href="#i-chip"/></svg> Translation chain</h2>
-    <div class="cfg-card">
-      <label class="cfg-label"><span class="cfg-label-text">Relay base URL</span></label>
-      <input type="text" v-model="cfg.fallback_base_url" class="cfg-input long">
-      <label class="cfg-label"><span class="cfg-label-text">Model (tier 1 — best value)</span></label>
-      <input type="text" v-model="cfg.fallback_model" class="cfg-input short">
-      <label class="cfg-label"><span class="cfg-label-text">Model 2 (tier 2 — quality)</span></label>
-      <input type="text" v-model="cfg.fallback_model_2" class="cfg-input short">
-      <p class="cfg-hint">Chain: tier 1 → tier 2, both on the single key above. Tier 2 engages only when tier 1 fails.</p>
+      <label class="cfg-label"><span class="cfg-label-text">Relay base URL</span>
+        <span class="status-badge" :class="cfg.fallback_base_url ? 'st-set' : 'st-unset'">{{ cfg.fallback_base_url ? 'Set ✓' : 'Not set' }}</span>
+      </label>
+      <input type="text" v-model="cfg.fallback_base_url" class="cfg-input long" placeholder="https://opencode.ai/zen/go/v1">
+      <label class="cfg-label"><span class="cfg-label-text">Model (tier 1 — best value)</span>
+        <span class="status-badge" :class="cfg.fallback_model ? 'st-set' : 'st-unset'">{{ cfg.fallback_model ? 'Set ✓' : 'Required' }}</span>
+      </label>
+      <input type="text" v-model="cfg.fallback_model" class="cfg-input short" placeholder="deepseek-v4-flash">
+      <label class="cfg-label"><span class="cfg-label-text">Model 2 (tier 2 — optional)</span>
+        <span class="status-badge" :class="cfg.fallback_model_2 ? 'st-set' : 'st-unset'">{{ cfg.fallback_model_2 ? 'Set ✓' : 'Optional' }}</span>
+      </label>
+      <input type="text" v-model="cfg.fallback_model_2" class="cfg-input short" placeholder="gpt-5.6-luna">
+      <p class="cfg-hint">On save, Nyaa pings the relay with the key + base URL, then checks the model names. If the key/base fail, nothing is saved. If only a model name is wrong, just that field is cleared.</p>
     </div>
 
     <h2 class="section-title"><svg class="ic"><use href="#i-lock"/></svg> Access</h2>
