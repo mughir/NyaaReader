@@ -48,6 +48,29 @@
           await loadBackups();
         } catch (e) { err.value = e.message; }
       }
+      async function restoreBackup(event) {
+        const file = (event.target.files || [])[0];
+        if (!file) return;
+        if (!file.name.endsWith(".db")) { err.value = "Please pick a .db backup file"; return; }
+        if (!confirm(`Restore library from "${file.name}"? This REPLACES your current data.`)) { event.target.value = ""; return; }
+        const fd = new FormData();
+        fd.append("file", file);
+        const btn = document.getElementById("restoreBtn");
+        if (btn) btn.disabled = true;
+        try {
+          const r = await fetch("/api/backups/restore", { method: "POST", body: fd });
+          const d = await r.json();
+          if (!r.ok) { err.value = d.detail || "restore failed"; }
+          else {
+            msg.value = `✓ Restored (${(d.size/1024).toFixed(0)} KB). Reloading…`;
+            setTimeout(() => { window.location.reload(); }, 1200);
+          }
+        } catch (e) { err.value = e.message; }
+        finally {
+          if (btn) btn.disabled = false;
+          event.target.value = "";
+        }
+      }
       async function save() {
         saving.value = true; msg.value = ""; err.value = "";
         const body = {
@@ -102,7 +125,7 @@
       onMounted(load);
 
       return { cfg, removeAuth, backups, saving, savedFlash, backingUp, msg, err,
-               save, backupNow, loadBackups, deleteBackup, fmtDate, logout };
+               save, backupNow, loadBackups, deleteBackup, restoreBackup, fmtDate, logout };
     },
     template: `
 <div>
@@ -177,6 +200,11 @@
       <button class="btn" @click="backupNow" :disabled="backingUp" style="margin:6px 0 12px">
         {{ backingUp ? 'Backing up…' : '💾 Backup now' }}
       </button>
+      <div style="margin-bottom:12px">
+        <button id="restoreBtn" class="btn ghost" @click="$refs.restoreInput.click()">📥 Restore from backup…</button>
+        <input ref="restoreInput" type="file" accept=".db" style="display:none" @change="restoreBackup">
+        <span class="muted" style="font-size:11px;margin-left:8px">choose a .db to replace the library</span>
+      </div>
       <div v-if="backups.length" class="bm-item">
         <div v-for="b in backups" :key="b.name" class="backup-row">
           <span style="font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis">{{ b.name }} · {{ (b.size/1024).toFixed(0) }} KB · {{ fmtDate(b.date) }}</span>

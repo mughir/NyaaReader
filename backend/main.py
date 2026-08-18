@@ -2374,10 +2374,16 @@ def _apply_config_to_env():
 async def get_config():
     """App config with secrets masked (show only last 4 chars)."""
     cfg = _get_config()
+    import os as _os
     masked = {}
     for k in ("gemini_api_key", "fallback_api_key", "auth_password"):
         v = cfg.get(k, "")
         masked[k] = (v[-4:] if len(v) >= 4 else "") if v else ""
+        # A key "counts as set" if it's in the DB OR actually available in the
+        # environment (env is what powers the translator). Otherwise the Settings
+        # page would claim "Not set" while the key from .env works fine.
+        if k == "fallback_api_key" and not v:
+            v = _os.getenv("FALLBACK_API_KEY", "")
         masked[k + "_set"] = bool(v)
     # strip the raw secret values, keep the masked copies
     out = {k: v for k, v in cfg.items() if k not in ("gemini_api_key", "fallback_api_key", "auth_password")}
@@ -2462,6 +2468,52 @@ async def download_backup(name: str):
     if not _os.path.exists(path):
         raise HTTPException(status_code=404, detail="Backup not found")
     return FileResponse(path, filename=safe)
+
+
+@app.post("/api/backups/restore")
+async def restore_backup(file: UploadFile):
+    """Restore the library from an uploaded backup .db file.
+
+    Replaces the live SQLite DB with the uploaded snapshot. Because the app
+    holds the DB open, we write the uploaded data into a staging file, stop
+    writes, swap it into place, and reload. Returns the new DB size.
+    """
+    import os as _os
+    if not file.filename or not file.filename.endswith(".db"):
+        raise HTTPException(status_code=400, detail="Upload a .db backup file")
+    db_path = _os.getenv("DATABASE_URL", "sqlite:///./novel_reader.db").replace("sqlite:///", "")
+    if not _os.path.exists(db_path):
+        raise HTTPException(status_code=500, detail="DB file not found")
+    # Staging file: write upload fully, then copy over the live DB (copy2 is
+    # atomic-ish on same filesystem; SQLite handles the swap on next open).
+    staging = db_path + ".restore-staging"
+    try:
+        with open(staging, "wb") as out:
+            while chunk := await file.read(1 << 20):
+                out.write(chunk)
+        # Sanity: must be a valid SQLite DB before we destroy the live one.
+        import sqlite3 as _sqlite
+        try:
+            probe = _sqlite.connect(staging)
+            probe.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            probe.close()
+        except Exception:
+            _os.remove(staging)
+            raise HTTPException(status_code=400, detail="Uploaded file is not a valid SQLite database")
+        import shutil as _shutil
+        _shutil.copy2(staging, db_path)  # replace live DB
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Restore failed: {e}")
+    finally:
+        if _os.path.exists(staging):
+            try: _os.remove(staging)
+            except OSError: pass
+    size = _os.path.getsize(db_path)
+    # Wipe in-memory batch cache so it doesn't reference now-gone rows.
+    _batch_cache.clear()
+    return {"status": "ok", "size": size, "message": "Restored — reload the page"}
 
 
 @app.delete("/api/backups/{name}")
