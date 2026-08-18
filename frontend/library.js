@@ -145,7 +145,7 @@
           <div class="meta" v-if="n.read_chapters > 0">📖 read {{ n.read_chapters }}/{{ n.total_chapters }} ({{ readPct(n) }}%)</div>
           <div class="card-actions">
             <span class="btn small" @click.prevent="openNovel(n.id)"><svg class="ic"><use href="#i-book-open"/></svg> Open</span>
-            <span v-if="n.last_read" class="btn small accent" @click.prevent="openChapter(n.id, n.last_read.chapter_number)" title="Continue reading">▶ Continue · Ch {{ n.last_read.chapter_number }}</span>
+            <span v-if="n.last_read" class="btn small accent" @click.prevent="openChapter(n.id, n.last_read.chapter_number)" title="Continue reading">Continue · Ch {{ n.last_read.chapter_number }}</span>
           </div>
         </div>
       </a>
