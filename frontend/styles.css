@@ -290,7 +290,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   padding-bottom: 14px; border-bottom: 1px dashed var(--border); max-width: 92%;
   text-wrap: balance;
 }
-.reader-content { font-family: var(--font-read); font-size: 18px; line-height: 1.9; }
+.reader-content { font-family: var(--font-read); font-size: inherit; line-height: inherit; }
 .reader-content p { margin-bottom: 1.25em; }
 .reader-content.translating { opacity: .5; }
 
@@ -490,7 +490,6 @@ body.toolbar-hidden .reader-toolbar { transform: translateY(-100%); opacity: 0; 
   .hero { flex-direction: column; align-items: center; text-align: center; }
   .hero .cover { width: 110px; height: 147px; }
   .reader-main { padding: 18px 14px 50px; }
-  .reader-content { font-size: 17px; }
   /* compact library grid for phones */
   .library-grid { gap: 12px; }
   .novel-card { width: 158px; }
