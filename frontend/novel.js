@@ -750,7 +750,7 @@
     <!-- in-text search results -->
     <div v-if="searchMode==='content'" class="search-results">
       <div v-if="contentSearching" class="muted" style="padding:8px">Searching…</div>
-      <div v-else-if="contentSearched && contentResults.length === 0" class="empty-state" style="border:none;background:none">
+      <div v-else-if="contentSearched && contentResults.length === 0" class="empty-state">
         <div class="empty-emoji">🔍</div>
         <div class="empty-title">Nothing found inside the translations</div>
         <div class="empty-sub">No translated chapter contains “{{ q.trim() }}”. Try a different name, or check chapters not yet translated.</div>

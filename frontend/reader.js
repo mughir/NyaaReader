@@ -765,10 +765,11 @@
     <div v-if="error" class="banner err">{{ error }}</div>
 
     <!-- not fetched yet -->
-    <div v-if="!hasOriginal && !busy" class="banner">
-      <span class="spinner" v-if="busy==='fetching'"></span>
-      This chapter hasn't been downloaded from the source yet.
-      <button class="btn small" @click="fetchContent">⬇ Fetch content</button>
+    <div v-if="!hasOriginal && !busy" class="empty-state">
+      <div class="empty-emoji">⛁</div>
+      <div class="empty-title">This chapter hasn't been downloaded yet</div>
+      <div class="empty-sub">Fetch it from the source — it will be AI-translated automatically.</div>
+      <div style="margin-top:12px"><button class="btn" @click="fetchContent">⬇ Fetch content</button></div>
     </div>
 
     <!-- busy fetch -->
