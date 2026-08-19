@@ -1,5 +1,5 @@
 """
-Gemini AI Translation Service (with OpenAI-compatible relay fallback)
+Enhanced Gemini AI Translation Service with Quality Rating and Theme Support
 """
 import google.generativeai as genai
 from typing import Optional, List, Dict
@@ -12,10 +12,141 @@ import os
 from dotenv import load_dotenv
 import logging
 import urllib.error
+import time
+import asyncio
+import hashlib
+from typing import Dict, Optional, Any, List
+from collections import defaultdict, deque
+from dataclasses import dataclass
+from enum import Enum
 
 logger = logging.getLogger("novel-reader.translator")
 
 logger = logging.getLogger("novel-reader.translator")
+
+load_dotenv()
+
+# Import quality assessment modules
+from translation_quality import (
+    TranslationQualityIndicator,
+    TranslationTheme,
+    EnhancedTranslationResult,
+    get_quality_indicator,
+    get_theme,
+    create_theme,
+    get_all_themes
+)
+
+# Quality integration
+_quality_indicator = get_quality_indicator()
+
+# Add quality assessment to existing methods
+from translation_quality import enhanced_translation_quality_wrapper
+quality_enhanced_translate = enhanced_translation_quality_wrapper()
+
+
+class CircuitBreaker:
+    """Enhanced Circuit Breaker with intelligent recovery strategies and rate limiting integration."""
+    
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        recovery_timeout: int = 60,
+        half_open_max_calls: int = 3,
+        rate_limiter = None,
+    ):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.half_open_max_calls = half_open_max_calls
+        self.rate_limiter = rate_limiter
+        
+        # State tracking
+        self._failure_count = 0
+        self._success_count = 0
+        self._state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+        self._last_failure_time = None
+        self._half_open_calls = 0
+        self._lock = asyncio.Lock()
+        
+        # Performance tracking
+        self._stats = {
+            'total_calls': 0,
+            'successful_calls': 0,
+            'failed_calls': 0,
+            'rate_limit_hits': 0,
+        }
+    
+    @property
+    def state(self) -> str:
+        return self._state
+    
+    async def call(self, func, *args, **kwargs):
+        """Execute function with circuit breaker protection."""
+        async with self._lock:
+            # Check if circuit is open
+            if self._state == "OPEN":
+                if time.time() - self._last_failure_time >= self.recovery_timeout:
+                    self._state = "HALF_OPEN"
+                    self._half_open_calls = 0
+                    logger.info("Circuit breaker: OPEN -> HALF_OPEN")
+                else:
+                    raise CircuitBreakerError(
+                        f"Circuit breaker OPEN (retry in {self.recovery_timeout - int(time.time() - self._last_failure_time)}s)"
+                    )
+            
+            # Check rate limiting
+            if self.rate_limiter:
+                if not await self.rate_limiter.can_consume("translator", 1):
+                    self._stats['rate_limit_hits'] += 1
+                    raise CircuitBreakerError("Rate limit exceeded")
+            
+            # Execute function if allowed
+            if self._state in ("CLOSED", "HALF_OPEN"):
+                self._half_open_calls += 1
+        
+        try:
+            result = await func() if asyncio.iscoroutinefunction(func) else func()
+            async with self._lock:
+                self._on_success()
+            return result
+        except Exception as e:
+            async with self._lock:
+                self._on_failure()
+            raise
+    
+    def _on_success(self):
+        if self._state == "HALF_OPEN":
+            self._success_count += 1
+            if self._success_count >= self.half_open_max_calls:
+                self._state = "CLOSED"
+                self._failure_count = 0
+                self._success_count = 0
+                self._half_open_calls = 0
+                logger.info("Circuit breaker: HALF_OPEN -> CLOSED")
+        else:
+            self._failure_count = 0
+        
+        self._stats['successful_calls'] += 1
+    
+    def _on_failure(self):
+        self._failure_count += 1
+        self._last_failure_time = time.time()
+        self._stats['failed_calls'] += 1
+        
+        if self._state == "HALF_OPEN":
+            self._state = "OPEN"
+            logger.warning("Circuit breaker: HALF_OPEN -> OPEN (failure)")
+        elif self._state == "CLOSED" and self._failure_count >= self.failure_threshold:
+            self._state = "OPEN"
+            logger.warning(f"Circuit breaker: CLOSED -> OPEN (threshold {self.failure_threshold} reached)")
+    
+    def reset(self):
+        self._state = "CLOSED"
+        self._failure_count = 0
+        self._success_count = 0
+        self._last_failure_time = None
+        self._half_open_calls = 0
+        logger.info("Circuit breaker: Reset")
 
 """
 Advanced rate limiting and intelligent translation caching system.
