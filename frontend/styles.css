@@ -111,6 +111,18 @@ body, .toc-list, .reader-content, .hero .desc, .mem-body, .para-orig-pop {
 .topbar .crumb::before { content: "›"; margin-right: 10px; color: var(--border); font-size: 15px; }
 .topbar .crumb a { color: var(--text-dim); }
 .topbar .crumb a:hover { color: var(--accent-strong); }
+.topbar .nav-count {
+    background: var(--muted);
+    color: var(--text-muted);
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    user-select: none;
+    pointer-events: none;
+    cursor: default;
+  }
 .topbar .flex-spacer { flex: 1; }
 .topbar .topnav { display: flex; align-items: center; gap: 4px; margin-left: 6px; }
 .topbar .nav-link {

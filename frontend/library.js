@@ -96,13 +96,13 @@
   <header class="topbar">
     <div class="container">
       <a class="brand" href="/"><span class="logo-mark"><svg class="ic ic-lg"><use href="#i-cat"/></svg></span> NyaaReader</a>
+      <span class="flex-spacer"></span>
+      <span class="nav-count" title="Novels in library">{{ novels.length }} novel{{ novels.length === 1 ? '' : 's' }}</span>
       <nav class="topnav">
         <a class="nav-link active" href="/"><svg class="ic"><use href="#i-home"/></svg><span class="nav-label">Library</span></a>
         <a class="nav-link" href="/dashboard"><svg class="ic"><use href="#i-sparkle"/></svg><span class="nav-label">Dashboard</span></a>
         <a class="nav-link" href="/config"><svg class="ic"><use href="#i-settings"/></svg><span class="nav-label">Settings</span></a>
       </nav>
-      <span class="flex-spacer"></span>
-      <span class="crumb">{{ novels.length }} novel{{ novels.length === 1 ? '' : 's' }}</span>
     </div>
   </header>
 
