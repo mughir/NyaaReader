@@ -1,7 +1,7 @@
 /* NyaaReader service worker — network-first with static-app-shell cache.
    Keeps the UI shell available offline; content always hits the network
    (translations are live data, never stale-cached). */
-const CACHE = "nyaa-reader-v3";   /* bumped 2026-08-19 — fix styles.css regression (acb67de pasted markdown into CSS); bump on every frontend deploy */
+const CACHE = "nyaa-reader-v4";   /* bumped 2026-08-19 — mobile reader toolbar: compact single-row (111px→54px) + 40px touch targets; bump on every frontend deploy */
 const SHELL = [
   "/static/styles.css",
   "/static/favicon.svg",

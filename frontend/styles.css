@@ -516,14 +516,15 @@ body.toolbar-hidden .reader-toolbar { transform: translateY(-100%); opacity: 0; 
   /* chapter rows tighter */
   .chapter-item { padding: 8px 10px; gap: 8px; }
   .chapter-item .ttl { font-size: 13px; }
-  /* reader toolbar: title first full-row, compact controls below */
-  .reader-toolbar { gap: 6px; padding: 6px 8px; }
-  .reader-toolbar .ttl { order: 0; width: 100%; font-size: 12px; flex: none; }
-  .reader-toolbar > .tool-group { order: 1; }
+  /* reader toolbar: single compact scrolling row on phones */
+  .reader-toolbar { gap: 4px; padding: 4px 6px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .reader-toolbar::-webkit-scrollbar { display: none; }
+  .reader-toolbar .ttl { flex: 0 1 42%; min-width: 0; font-size: 11px; margin-right: auto; }
+  .reader-toolbar > .tool-group, .reader-toolbar > .btn, .reader-toolbar > .badge { flex: 0 0 auto; }
+  .tool-group button, .tool-group a { height: 40px; min-width: 40px; padding: 0 8px; }
   .tg-label { display: none; }        /* icons-only theme switcher on phones */
   .tg-nav .nav-label { display: none; }
-  .tool-group button { padding: 4px 7px; }
-  .btn.small { padding: 4px 8px; }
+  .btn.small { padding: 0 10px; height: 40px; }
   .recap-hint { display: none; }      /* keep "Previously on…" from wrapping */
   /* end-of-chapter card actions wrap nicely */
   .chapter-end { padding: 14px 12px; }
