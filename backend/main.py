@@ -2354,10 +2354,6 @@ def _get_config():
             cfg.fallback_model_2 = os.getenv("FALLBACK_MODEL_2", "gpt-5.6-luna")
             cfg.fallback_2_base_url = os.getenv("FALLBACK_2_BASE_URL", "")
             cfg.fallback_2_api_key = os.getenv("FALLBACK_2_API_KEY", "")
-            cfg.fallback_3_base_url = os.getenv("FALLBACK_3_BASE_URL", "")
-            cfg.fallback_3_api_key = os.getenv("FALLBACK_3_API_KEY", "")
-            cfg.fallback_4_base_url = os.getenv("FALLBACK_4_BASE_URL", "")
-            cfg.fallback_4_api_key = os.getenv("FALLBACK_4_API_KEY", "")
             db.add(cfg)
             db.commit()
         return {
@@ -2368,10 +2364,6 @@ def _get_config():
             "fallback_model_2": cfg.fallback_model_2 or "",
             "fallback_2_base_url": cfg.fallback_2_base_url or "",
             "fallback_2_api_key": cfg.fallback_2_api_key or "",
-            "fallback_3_base_url": cfg.fallback_3_base_url or "",
-            "fallback_3_api_key": cfg.fallback_3_api_key or "",
-            "fallback_4_base_url": cfg.fallback_4_base_url or "",
-            "fallback_4_api_key": cfg.fallback_4_api_key or "",
             "backup_enabled": bool(cfg.backup_enabled),
             "backup_interval_hours": cfg.backup_interval_hours or 24,
             "backup_keep": cfg.backup_keep or 14,
@@ -2399,18 +2391,6 @@ def _apply_config_to_env():
         os.environ["FALLBACK_2_BASE_URL"] = cfg["fallback_2_base_url"]
     if cfg.get("fallback_2_api_key"):
         os.environ["FALLBACK_2_API_KEY"] = cfg["fallback_2_api_key"]
-    if cfg.get("fallback_3_base_url"):
-        os.environ["FALLBACK_3_BASE_URL"] = cfg["fallback_3_base_url"]
-    if cfg.get("fallback_3_api_key"):
-        os.environ["FALLBACK_3_API_KEY"] = cfg["fallback_3_api_key"]
-    if cfg.get("fallback_3_model"):
-        os.environ["FALLBACK_3_MODEL"] = cfg["fallback_3_model"]
-    if cfg.get("fallback_4_base_url"):
-        os.environ["FALLBACK_4_BASE_URL"] = cfg["fallback_4_base_url"]
-    if cfg.get("fallback_4_api_key"):
-        os.environ["FALLBACK_4_API_KEY"] = cfg["fallback_4_api_key"]
-    if cfg.get("fallback_4_model"):
-        os.environ["FALLBACK_4_MODEL"] = cfg["fallback_4_model"]
     import translator as _tr
     _tr._translator_instance = None
 
@@ -2446,9 +2426,7 @@ async def put_config(payload: dict, db: Session = Depends(get_db_session)):
         db.add(cfg)
     fields = ["gemini_api_key", "fallback_api_key", "fallback_base_url",
               "fallback_model", "fallback_model_2", "auth_password",
-              "fallback_2_base_url", "fallback_2_api_key",
-              "fallback_3_base_url", "fallback_3_api_key",
-              "fallback_4_base_url", "fallback_4_api_key"]
+              "fallback_2_base_url", "fallback_2_api_key"]
     password_changed = False
     for f in fields:
         if f in payload or payload.get(f + "__clear"):
@@ -2498,56 +2476,58 @@ async def config_health_check(payload: dict = None):
     import urllib.request, json as _json, urllib.error
     p = payload or {}
     
-    # Collect all fallback configs to test
-    fallbacks_to_test = [
-        {
-            "name": "primary",
-            "key": (p.get("api_key") or _os.getenv("FALLBACK_API_KEY", "")).strip(),
-            "base": (p.get("base_url") or _os.getenv("FALLBACK_BASE_URL", "https://opencode.ai/zen/go/v1")).strip().rstrip("/"),
-            "model": (p.get("model") or "").strip(),
-            "model_2": (p.get("model_2") or "").strip(),
-        }
-    ]
+    # Test primary relay
+    key = (p.get("api_key") or _os.getenv("FALLBACK_API_KEY", "")).strip()
+    base = (p.get("base_url") or _os.getenv("FALLBACK_BASE_URL", "https://opencode.ai/zen/go/v1")).strip().rstrip("/")
+    model1 = (p.get("model") or "").strip()
+    model2 = (p.get("model_2") or "").strip()
     
-    # Add fallback 3 if configured
-    if p.get("fallback_3_api_key") or p.get("fallback_3_base_url") or os.getenv("FALLBACK_3_API_KEY") or os.getenv("FALLBACK_3_BASE_URL"):
-        fallbacks_to_test.append({
-            "name": "fallback_3",
-            "key": (p.get("fallback_3_api_key") or os.getenv("FALLBACK_3_API_KEY", "")).strip(),
-            "base": (p.get("fallback_3_base_url") or os.getenv("FALLBACK_3_BASE_URL", "")).strip().rstrip("/"),
-            "model": (p.get("fallback_model_3") or "").strip(),
-            "model_2": "",
+    key_ok = True
+    available = []
+    url = f"{base}/models"
+    try:
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {key}",
+            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+            "X-Title": "Hermes Agent",
+            "User-Agent": "HermesAgent/3.1.0",
         })
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = _json.loads(resp.read().decode())
+        lst = data if isinstance(data, list) else data.get("data", [])
+        available = [m.get("id") if isinstance(m, dict) else str(m) for m in lst]
+    except Exception as e:
+        key_ok = False
+        return {"key_ok": False, "message": f"Could not reach relay at {base}: {e}",
+                "models": {"model": False, "model_2": False}}
+
+    def valid(name):
+        if not name:
+            return True  # blank tier 2 is allowed; blank model1 handled by caller
+        n = name.strip().lower()
+        return any(a.lower() == n for a in available) or any(n in a.lower() for a in available)
+
+    m1_ok = valid(model1)
+    m2_ok = valid(model2) if model2 else True
+    message = "OK"
+    if not m1_ok:
+        message = f"Model '{model1}' not found on relay (cleared)"
+    elif not m2_ok:
+        message = f"Model 2 '{model2}' not found on relay (cleared)"
     
-    if p.get("fallback_4_api_key") or p.get("fallback_4_base_url") or os.getenv("FALLBACK_4_API_KEY") or os.getenv("FALLBACK_4_BASE_URL"):
-        fallbacks_to_test.append({
-            "name": "fallback_4",
-            "key": (p.get("fallback_4_api_key") or os.getenv("FALLBACK_4_API_KEY", "")).strip(),
-            "base": (p.get("fallback_4_base_url") or os.getenv("FALLBACK_4_BASE_URL", "")).strip().rstrip("/"),
-            "model": (p.get("fallback_model_4") or "").strip(),
-            "model_2": "",
-        })
+    # If Model 2 has separate URL/key, test that too
+    m2_base = (p.get("fallback_2_base_url") or _os.getenv("FALLBACK_2_BASE_URL", "")).strip().rstrip("/")
+    m2_key = (p.get("fallback_2_api_key") or _os.getenv("FALLBACK_2_API_KEY", "")).strip()
     
-    results = {}
-    all_key_ok = True
-    
-    for fb in fallbacks_to_test:
-        if not fb["key"] or not fb["base"]:
-            results[fb["name"]] = {"key_ok": False, "models": {}, "message": "Key or base URL not configured", "available_count": 0}
-            all_key_ok = False
-            continue
-        
-        key = fb["key"]
-        base = fb["base"]
-        model1 = fb["model"]
-        model2 = fb.get("model_2", "")
-        
-        key_ok = True
-        available = []
-        url = f"{base}/models"
+    fallback2_result = {}
+    if m2_base and m2_key and m2_base != base:
+        # Test Model 2's separate relay
+        m2_model = (p.get("model_2") or "").strip()
+        available2 = []
+        url2 = f"{m2_base}/models"
         try:
-            req = urllib.request.Request(url, headers={
-                "Authorization": f"Bearer {key}",
+            req = urllib.request.Request(url2, headers={
+                "Authorization": f"Bearer {m2_key}",
                 "HTTP-Referer": "https://hermes-agent.nousresearch.com",
                 "X-Title": "Hermes Agent",
                 "User-Agent": "HermesAgent/3.1.0",
@@ -2555,44 +2535,28 @@ async def config_health_check(payload: dict = None):
             with urllib.request.urlopen(req, timeout=25) as resp:
                 data = _json.loads(resp.read().decode())
             lst = data if isinstance(data, list) else data.get("data", [])
-            available = [m.get("id") if isinstance(m, dict) else str(m) for m in lst]
+            available2 = [m.get("id") if isinstance(m, dict) else str(m) for m in lst]
         except Exception as e:
+            fallback2_result = {"key_ok": False, "message": f"Could not reach Model 2 relay at {m2_base}: {e}", "models": {"model": False}}
             key_ok = False
-            results[fb["name"]] = {"key_ok": False, "message": f"Could not reach relay at {base}: {e}", "models": {}, "available_count": 0}
-            all_key_ok = False
-            continue
-        
-        def valid(name):
-            if not name:
-                return True
-            n = name.strip().lower()
-            return any(a.lower() == n for a in available) or any(n in a.lower() for a in available)
-        
-        m1_ok = valid(fb.get("model", ""))
-        m2_ok = valid(fb.get("model_2", "")) if fb.get("model_2") else True
-        message = "OK"
-        if not m1_ok:
-            message = f"Model '{fb.get('model', '')}' not found on relay (cleared)"
-        elif not m2_ok:
-            message = f"Model 2 '{fb.get('model_2', '')}' not found on relay (cleared)"
-        
-        results[fb["name"]] = {
-            "key_ok": True, 
-            "models": {"model": m1_ok, "model_2": m2_ok},
-            "available_count": len(available),
-            "message": message
-        }
-        if not key_ok:
-            all_key_ok = False
+        else:
+            def valid2(name):
+                if not name:
+                    return True
+                n = name.strip().lower()
+                return any(a.lower() == n for a in available2) or any(n in a.lower() for a in available2)
+            m2_model_ok = valid2(m2_model)
+            if not m2_model_ok:
+                fallback2_result = {"key_ok": True, "message": f"Model 2 '{m2_model}' not found on its relay (cleared)", "models": {"model": False}}
+            else:
+                fallback2_result = {"key_ok": True, "models": {"model": m2_model_ok}, "available_count": len(available2), "message": "OK"}
     
-    # Build response compatible with old format for primary
-    primary_result = results.get("primary", {})
     return {
-        "key_ok": all_key_ok,
-        "models": primary_result.get("models", {"model": False, "model_2": False}),
-        "available_count": primary_result.get("available_count", 0),
-        "message": primary_result.get("message", "OK"),
-        "fallbacks": results
+        "key_ok": key_ok,
+        "models": {"model": m1_ok, "model_2": m2_ok},
+        "available_count": len(available),
+        "message": message,
+        "fallback_2": fallback2_result if fallback2_result else None
     }
 
 
