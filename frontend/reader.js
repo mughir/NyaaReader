@@ -305,11 +305,11 @@
       }
 
       // -------- actions --------
-      async function fetchContent() {
-        if (busy.value || hasOriginal.value) return;
+      async function fetchContent(force) {
+        if (busy.value || (hasOriginal.value && !force)) return;
         busy.value = "fetching"; error.value = "";
         try {
-          const res = await fetch(`/api/novels/${novelId}/chapters/${chapterNumber}/fetch`, { method: "POST" });
+          const res = await fetch(`/api/novels/${novelId}/chapters/${chapterNumber}/fetch${force ? "?force=true" : ""}`, { method: "POST" });
           if (!res.ok) throw new Error("fetch failed");
           const data = await res.json();
           if (data.status !== "ok") { busy.value = ""; error.value = "Could not fetch chapter content."; return; }
@@ -329,6 +329,11 @@
           busy.value = ""; error.value = "Fetch failed: " + e.message;
           toast("Fetch failed: " + e.message, true);
         }
+      }
+
+      function refetchConfirm() {
+        if (!confirm("Re-download this chapter from the source? The current translation will be discarded and you'll need to re-translate.")) return;
+        fetchContent(true);
       }
 
       async function translate() {
@@ -705,7 +710,7 @@
         memOpen, memLoading, memSaving, memSaved, memError, gloss,
         fontFamily, readerWidth, focusMode, settingsOpen, autoFetch,
         chapterNumber, total, novelId, DATA,
-        setTheme, bumpFont, bumpLine, toggleOrig, fetchContent, translate,
+        setTheme, bumpFont, bumpLine, toggleOrig, fetchContent, refetchConfirm, translate,
         setFontFamily, setWidth, toggleFocus, toggleAutoFetch,
         toggleMem, addChar, addTerm, removeEntry, saveMemory,
         toggleBookmarks, saveBookmark, removeBookmark, hideSelPop,
@@ -738,6 +743,8 @@
       {{ busy==='translating' ? 'Translating…' : '🌐 Translate' }}
     </button>
     <span v-else-if="isTranslated" class="badge ok" title="Translated">✓</span>
+    <button v-if="hasOriginal" class="btn ghost small" @click="refetchConfirm"
+            :disabled="!!busy" title="Re-download this chapter from the source (fixes truncated/broken content)">⟳ Re-fetch</button>
     <div class="tool-group">
       <button @click="bumpFont(-1)" title="Smaller font">A−</button>
       <button @click="bumpFont(1)" title="Bigger font">A+</button>

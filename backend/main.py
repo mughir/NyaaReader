@@ -3284,15 +3284,22 @@ async def translate_chapter_start(
 
 
 @app.post("/api/novels/{novel_id}/chapters/{chapter_number}/fetch")
-async def fetch_chapter_json(novel_id: int, chapter_number: int, db: Session = Depends(get_db_session)):
-    """Fetch one chapter's content synchronously (JSON)."""
+async def fetch_chapter_json(novel_id: int, chapter_number: int, force: bool = False,
+                             db: Session = Depends(get_db_session)):
+    """Fetch one chapter's content synchronously (JSON).
+
+    force=True refetches even when the chapter already has content — the
+    escape hatch for a bad/truncated scrape (e.g. an author-note preface
+    saved instead of the story). Without force, already-populated chapters
+    are left untouched.
+    """
     chapter = db.query(Chapter).filter(
         Chapter.novel_id == novel_id,
         Chapter.chapter_number == chapter_number,
     ).first()
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
-    if not chapter.original_content:
+    if not chapter.original_content or force:
         from scrapers import get_scraper_for_url
         scraper = get_scraper_for_url(chapter.source_url)
         if scraper:
@@ -3301,6 +3308,12 @@ async def fetch_chapter_json(novel_id: int, chapter_number: int, db: Session = D
                 if ch_data and ch_data.content:
                     chapter.original_content = ch_data.content
                     chapter.word_count = ch_data.word_count
+                    # A refetch replaces the source text; the old translation
+                    # is now stale — mark it untranslated so the reader offers
+                    # a fresh translate instead of showing mismatched text.
+                    chapter.is_translated = False
+                    chapter.translated_content = None
+                    chapter.last_error = ""
                     db.commit()
     return {
         "status": "ok" if chapter.original_content else "failed",
