@@ -414,6 +414,17 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .sp-row .toggle.on { background: var(--accent); color: #fff; border-color: transparent; }
 body.reader-focus .reader-toolbar { display: none; }
 body.reader-focus .reader-main { padding-top: 18px; }
+/* Focus-mode exit: the toolbar (with the focus toggle) is hidden in focus
+   mode, and mobile has no Escape key — so a floating exit pill must exist
+   or the reader is a trap. */
+.focus-exit { position: fixed; top: 14px; right: 14px; z-index: 60; display: none;
+  align-items: center; gap: 6px; padding: 8px 14px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  font-size: 13px; font-family: var(--font-ui); cursor: pointer;
+  box-shadow: var(--shadow-lg); }
+.focus-exit .ic { color: var(--accent); }
+.focus-exit:hover { background: var(--surface-2); }
+body.reader-focus .focus-exit { display: inline-flex; }
 .reader-toolbar { transition: transform .25s ease, opacity .25s ease; }
 body.toolbar-hidden .reader-toolbar { transform: translateY(-100%); opacity: 0; pointer-events: none; }
 
@@ -421,7 +432,10 @@ body.toolbar-hidden .reader-toolbar { transform: translateY(-100%); opacity: 0; 
 .mem-sec-title { margin: 0 0 8px; font-size: 13px; }
 .gloss-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
 .g-in { flex: 1; min-width: 0; background: var(--surface); border: 1px solid var(--border);
-  border-radius: 6px; padding: 6px 8px; font-size: 13px; color: var(--text); }
+  border-radius: var(--radius-sm); padding: 8px 10px; font-size: 13px; color: var(--text);
+  font-family: var(--font-ui); height: 34px; }
+.g-in:hover { border-color: color-mix(in srgb, var(--border) 60%, var(--accent)); }
+.g-in:focus { outline: none; border-color: var(--accent); box-shadow: var(--focus-ring); }
 .g-in.g-src { flex: 0 0 150px; }
 .g-in.g-name { flex: 1.4; }
 .g-lock { display: inline-flex; align-items: center; gap: 2px; cursor: pointer;

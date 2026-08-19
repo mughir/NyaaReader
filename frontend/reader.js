@@ -678,6 +678,9 @@
   <!-- progress bar -->
   <div class="reader-progress"><div></div></div>
 
+  <!-- focus-mode exit (toolbar is hidden; mobile has no Esc) -->
+  <button v-if="focusMode" class="focus-exit" @click="toggleFocus" title="Exit focus mode (Esc)">✕ Exit focus</button>
+
   <!-- toolbar -->
   <div class="reader-toolbar">
     <div class="tool-group tg-nav">
@@ -898,9 +901,9 @@
       <template v-else>
         <h4 class="mem-sec-title">👥 Characters</h4>
         <div v-for="(e, i) in gloss.characters" :key="'c'+i" class="gloss-row">
-          <input v-model="e.translated" placeholder="EN name" style="width:34%">
-          <input v-model="e.source" placeholder="Original" style="width:26%">
-          <input v-model="e.note" placeholder="Note" style="flex:1">
+          <input v-model="e.translated" placeholder="EN name" class="g-in g-name">
+          <input v-model="e.source" placeholder="Original" class="g-in g-src">
+          <input v-model="e.note" placeholder="Note" class="g-in g-note">
           <label class="lock" title="Lock: AI must keep this translation">
             🔒<input type="checkbox" v-model="e.locked">
           </label>
@@ -910,9 +913,9 @@
 
         <h4 class="mem-sec-title">📖 Terms</h4>
         <div v-for="(e, i) in gloss.terms" :key="'t'+i" class="gloss-row">
-          <input v-model="e.source" placeholder="Original term" style="width:34%">
-          <input v-model="e.translated" placeholder="EN term" style="width:26%">
-          <input v-model="e.note" placeholder="Note" style="flex:1">
+          <input v-model="e.source" placeholder="Original term" class="g-in g-src">
+          <input v-model="e.translated" placeholder="EN term" class="g-in g-name">
+          <input v-model="e.note" placeholder="Note" class="g-in g-note">
           <label class="lock" title="Lock: AI must keep this translation">
             🔒<input type="checkbox" v-model="e.locked">
           </label>
