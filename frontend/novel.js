@@ -541,8 +541,7 @@
                translatingAll, checking, shelfStatus, shelfLabel, shelfIcon,
                gloss, memSections, toggleMemory, saveMemory, retranslate, translateTitles,
                translateAll, checkUpdates, setShelf,
-               addChar, addTerm, removeEntry, batch, pollBatch,
-               listPage, totalPages, PER_PAGE, goListPage };
+               addChar, addTerm, removeEntry, batch, pollBatch };
     },
     mounted() { this.ensureMetaTranslated(); this.pollBatch(); this.loadFailedCount(); this.loadDriftCount(); },
     template: `
@@ -778,18 +777,6 @@
       <div class="empty-sub" v-else>Use <button class="btn ghost small" @click="fetchMore" :disabled="fetching">⬇ Fetch next 10</button> to download chapters from the source.</div>
     </div>
 
-    <!-- chapter-list pager -->
-    <div v-if="totalPages > 1" class="pager">
-      <span class="pg-ind">Page {{ listPage }} / {{ totalPages }} · {{ filtered.length }} chapters</span>
-      <span class="pager-controls">
-        <button class="btn ghost small" :disabled="listPage <= 1" @click="goListPage(-1)">← Prev</button>
-        <template v-for="(p, i) in pageNumbers" :key="'b' + i">
-          <button v-if="p === -1" class="btn ghost small pg-ellipsis" disabled>…</button>
-          <button v-else class="btn ghost small pager-page" :class="{active: p === listPage}" @click="goToPage(p)">{{ p }}</button>
-        </template>
-        <button class="btn ghost small" :disabled="listPage >= totalPages" @click="goListPage(1)">Next →</button>
-      </span>
-    </div>
   </div>
 </div>`,
   });

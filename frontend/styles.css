@@ -534,6 +534,12 @@ body.toolbar-hidden .reader-toolbar { transform: translateY(-100%); opacity: 0; 
   .gloss-drawer { width: 92vw; }
   /* settings popover fits */
   .settings-pop { right: 8px; left: 8px; width: auto; }
+  /* big touch targets inside the popover on phones */
+  .settings-pop .sp-row { margin-bottom: 14px; }
+  .settings-pop .sp-row label { min-width: 60px; padding: 8px 0; }
+  .settings-pop .sp-row input[type=range] { height: 40px; }
+  .settings-pop .sp-row .toggle { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; }
+  .settings-pop .sp-row .tool-group button { height: 40px; }
   /* review + config cards breathe */
   .rv-card, .cfg-card { padding: 10px 12px; }
   .hero .desc.collapsed { max-height: 90px; }

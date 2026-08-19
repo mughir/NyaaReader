@@ -1,7 +1,10 @@
 /* NyaaReader service worker — network-first with static-app-shell cache.
    Keeps the UI shell available offline; content always hits the network
    (translations are live data, never stale-cached). */
-const CACHE = "nyaa-reader-v4";   /* bumped 2026-08-19 — mobile reader toolbar: compact single-row (111px→54px) + 40px touch targets; bump on every frontend deploy */
+const CACHE = "nyaa-reader-v4";   /* NOTE: manual version bumps are OBSOLETE — backend main.py
+   _asset_stamp() appends ?v=<hash> to every asset URL, so any frontend edit
+   produces new URLs that miss this cache automatically. Keep this CACHE name
+   stable; only bump if you change the SW's own caching strategy. */
 const SHELL = [
   "/static/styles.css",
   "/static/favicon.svg",

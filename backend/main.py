@@ -2996,15 +2996,39 @@ async def dashboard_page():
 # ============================================================================
 
 
+def _asset_stamp() -> str:
+    """Cache-busting stamp for static assets.
+
+    Returns a short hash of the frontend shell files' mtimes. Any frontend
+    edit (styles.css, *.js) changes the hash, so every rendered page references
+    assets as /static/x.css?v=<stamp>. The service worker matches its cache by
+    FULL url, so a changed stamp makes the old SW-cached copy miss and fetch
+    fresh from network — this is what makes the manual "bump nyaa-reader-vN in
+    sw.js" step obsolete: you cannot forget it, because there is nothing to
+    remember.
+    """
+    try:
+        h = hashlib.md5()
+        for name in ("styles.css", "library.js", "novel.js", "reader.js",
+                     "config.js", "dashboard.js", "review.js", "login.js"):
+            p = os.path.join(frontend_path, name)
+            if os.path.exists(p):
+                h.update(str(os.path.getmtime(p)).encode())
+        return h.hexdigest()[:10]
+    except Exception:
+        return "0"
+
+
 def _page(title: str, body: str, page_js: Optional[str] = None,
           data_js: Optional[str] = None, refresh: Optional[int] = None) -> HTMLResponse:
     refresh_tag = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ""
     data_tag = f"<script>{data_js}</script>" if data_js else ""
+    stamp = _asset_stamp()
     js_tags = ""
     if page_js:
         js_tags = (
-            '<script src="/static/vendor/vue.global.prod.js"></script>\n'
-            f'<script src="/static/{page_js}"></script>'
+            f'<script src="/static/vendor/vue.global.prod.js?v={stamp}"></script>\n'
+            f'<script src="/static/{page_js}?v={stamp}"></script>'
         )
     icons_sprite = open(
         os.path.join(frontend_path, "icons.svg"), encoding="utf-8"
@@ -3024,7 +3048,7 @@ def _page(title: str, body: str, page_js: Optional[str] = None,
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/styles.css?v={stamp}">
 </head>
 <body>
 {icons_sprite}
