@@ -183,27 +183,60 @@
 
     <h2 class="section-title"><svg class="ic"><use href="#i-key"/></svg> API Key</h2>
     <div class="cfg-card">
-      <label class="cfg-label">
-        <span class="cfg-label-text">Relay API key</span>
-        <span class="status-badge" :class="cfg.fallback_api_key_set ? 'st-set' : 'st-unset'">{{ cfg.fallback_api_key_set ? 'Set ✓' : 'Not set' }}</span>
-      </label>
-      <p class="cfg-hint">Single key for the whole chain — deepseek-v4-flash &amp; gpt-5.6-luna.</p>
-      <input type="password" v-model="cfg.fallback_api_key" placeholder="Leave empty to keep current key"
-             class="cfg-input long" autocomplete="off">
-      <label class="cfg-label"><span class="cfg-label-text">Relay base URL</span>
-        <span class="status-badge" :class="cfg.fallback_base_url ? 'st-set' : 'st-unset'">{{ cfg.fallback_base_url ? 'Set ✓' : 'Not set' }}</span>
-      </label>
-      <input type="text" v-model="cfg.fallback_base_url" class="cfg-input long" placeholder="https://api.relay.example.com/v1">
-      <label class="cfg-label"><span class="cfg-label-text">Model (tier 1 — best value)</span>
-        <span class="status-badge" :class="cfg.fallback_model ? 'st-set' : 'st-unset'">{{ cfg.fallback_model ? 'Set ✓' : 'Required' }}</span>
-      </label>
-      <input type="text" v-model="cfg.fallback_model" class="cfg-input short" placeholder="deepseek-v4-flash">
-      <label class="cfg-label"><span class="cfg-label-text">Model 2 (tier 2 — optional)</span>
-        <span class="status-badge" :class="cfg.fallback_model_2 ? 'st-set' : 'st-unset'">{{ cfg.fallback_model_2 ? 'Set ✓' : 'Optional' }}</span>
-      </label>
-      <input type="text" v-model="cfg.fallback_model_2" class="cfg-input short" placeholder="gpt-5.6-luna">
-      <p class="cfg-hint">On save, Nyaa pings the relay with the key + base URL, then checks the model names. If the key/base fail, nothing is saved. If only a model name is wrong, just that field is cleared.</p>
-    </div>
+          <label class="cfg-label">
+            <span class="cfg-label-text">Relay API key</span>
+            <span class="status-badge" :class="cfg.fallback_api_key_set ? 'st-set' : 'st-unset'">{{ cfg.fallback_api_key_set ? 'Set ✓' : 'Not set' }}</span>
+          </label>
+          <p class="cfg-hint">Primary relay key for tier 1 (deepseek-v4-flash) & tier 2 (gpt-5.6-luna).</p>
+          <input type="password" v-model="cfg.fallback_api_key" placeholder="Leave empty to keep current key"
+                 class="cfg-input long" autocomplete="off">
+          <label class="cfg-label"><span class="cfg-label-text">Relay base URL</span>
+            <span class="status-badge" :class="cfg.fallback_base_url ? 'st-set' : 'st-unset'">{{ cfg.fallback_base_url ? 'Set ✓' : 'Not set' }}</span>
+          </label>
+          <input type="text" v-model="cfg.fallback_base_url" class="cfg-input long" placeholder="https://opencode.ai/zen/go/v1">
+          <label class="cfg-label"><span class="cfg-label-text">Model (tier 1 — best value)</span>
+            <span class="status-badge" :class="cfg.fallback_model ? 'st-set' : 'st-unset'">{{ cfg.fallback_model ? 'Set ✓' : 'Required' }}</span>
+          </label>
+          <input type="text" v-model="cfg.fallback_model" class="cfg-input short" placeholder="deepseek-v4-flash">
+          <label class="cfg-label"><span class="cfg-label-text">Model 2 (tier 2 — optional)</span>
+            <span class="status-badge" :class="cfg.fallback_model_2 ? 'st-set' : 'st-unset'">{{ cfg.fallback_model_2 ? 'Set ✓' : 'Optional' }}</span>
+          </label>
+          <input type="text" v-model="cfg.fallback_model_2" class="cfg-input short" placeholder="gpt-5.6-luna">
+          <p class="cfg-hint">On save, Nyaa pings the relay with the key + base URL, then checks the model names. If the key/base fail, nothing is saved. If only a model name is wrong, just that field is cleared.</p>
+          <hr style="margin: 16px 0; border-color: var(--border);">
+          <h4 style="margin-bottom: 8px;">Fallback 3 (OpenRouter / custom)</h4>
+          <label class="cfg-label">
+            <span class="cfg-label-text">API key</span>
+            <span class="status-badge" :class="cfg.fallback_3_api_key_set ? 'st-set' : 'st-unset'">{{ cfg.fallback_3_api_key_set ? 'Set ✓' : 'Not set' }}</span>
+          </label>
+          <input type="password" v-model="cfg.fallback_3_api_key" placeholder="Leave empty to use primary relay key"
+                 class="cfg-input long" autocomplete="off">
+          <label class="cfg-label"><span class="cfg-label-text">Base URL</span>
+            <span class="status-badge" :class="cfg.fallback_3_base_url ? 'st-set' : 'st-unset'">{{ cfg.fallback_3_base_url ? 'Set ✓' : 'Not set' }}</span>
+          </label>
+          <input type="text" v-model="cfg.fallback_3_base_url" class="cfg-input long" placeholder="https://openrouter.ai/api/v1">
+          <label class="cfg-label"><span class="cfg-label-text">Model</span>
+            <span class="status-badge" :class="cfg.fallback_model_3 ? 'st-set' : 'st-unset'">{{ cfg.fallback_model_3 ? 'Set ✓' : 'Optional' }}</span>
+          </label>
+          <input type="text" v-model="cfg.fallback_model_3" class="cfg-input short" placeholder="google/gemma-4-31b-it:free">
+          <hr style="margin: 16px 0; border-color: var(--border);">
+          <h4 style="margin-bottom: 8px;">Fallback 4 (custom)</h4>
+          <label class="cfg-label">
+            <span class="cfg-label-text">API key</span>
+            <span class="status-badge" :class="cfg.fallback_4_api_key_set ? 'st-set' : 'st-unset'">{{ cfg.fallback_4_api_key_set ? 'Set ✓' : 'Not set' }}</span>
+          </label>
+          <input type="password" v-model="cfg.fallback_4_api_key" placeholder="Leave empty to use primary relay key"
+                 class="cfg-input long" autocomplete="off">
+          <label class="cfg-label"><span class="cfg-label-text">Base URL</span>
+            <span class="status-badge" :class="cfg.fallback_4_base_url ? 'st-set' : 'st-unset'">{{ cfg.fallback_4_base_url ? 'Set ✓' : 'Not set' }}</span>
+          </label>
+          <input type="text" v-model="cfg.fallback_4_base_url" class="cfg-input long" placeholder="https://api.custom-relay.com/v1">
+          <label class="cfg-label"><span class="cfg-label-text">Model</span>
+            <span class="status-badge" :class="cfg.fallback_model_4 ? 'st-set' : 'st-unset'">{{ cfg.fallback_model_4 ? 'Set ✓' : 'Optional' }}</span>
+          </label>
+          <input type="text" v-model="cfg.fallback_model_4" class="cfg-input short" placeholder="custom-model-name">
+          <p class="cfg-hint">On save, Nyaa pings each fallback with its own key + base URL, then checks model names. If a key/base fails, that fallback is disabled. If only a model name is wrong, just that field is cleared.</p>
+        </div>
 
     <h2 class="section-title"><svg class="ic"><use href="#i-lock"/></svg> Access</h2>
     <div class="cfg-card">

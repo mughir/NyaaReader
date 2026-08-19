@@ -869,30 +869,70 @@ def get_translator(
 ) -> GeminiTranslator:
     """Get or create translator instance.
 
-    Single-provider chain (2026-08-17, Gemini dropped by user request):
-      FALLBACK_MODEL (default deepseek-v4-flash, best value)
-      -> FALLBACK_MODEL_2 (default gpt-5.6-luna, quality tier)
-    Both use the SAME single API key (FALLBACK_API_KEY) on the SAME relay
-    base URL (FALLBACK_BASE_URL). Each step only engages when the previous
-    one fails."""
+    Multi-provider fallback chain (2026-08-19):
+      1. opencode relay (deepseek-v4-flash) - primary, best value
+      2. opencode relay (gpt-5.6-luna) - quality tier, SAME relay/key
+      3. OpenRouter (gemma-4-31b-it:free) - FREE, different provider/key
+      4. OpenRouter (openai/gpt-oss-20b:free) - FREE backup
+    Each step only engages when the previous one fails.
+    Each step can have its own base_url, api_key, and model.
+    """
     global _translator_instance
     if _translator_instance is None:
-        relay_key = api_key or os.getenv("FALLBACK_API_KEY")
-        base_url = os.getenv("FALLBACK_BASE_URL") or "https://api.relay.example.com/v1"
-        primary_model = model or os.getenv("FALLBACK_MODEL") or "deepseek-v4-flash"
+        # Primary: opencode relay
+        relay_key = os.getenv("FALLBACK_API_KEY")
+        relay_base_url = os.getenv("FALLBACK_BASE_URL") or "https://opencode.ai/zen/go/v1"
+        primary_model = os.getenv("FALLBACK_MODEL") or "deepseek-v4-flash"
+        
         try:
             primary = OpenAIRelayTranslator(
-                api_key=relay_key, model=primary_model, base_url=base_url)
+                api_key=relay_key, model=primary_model, base_url=relay_base_url)
         except Exception as e:
             logger.error(f"Relay translator init failed ({e})")
             return None
+        
         fallbacks = []
+        
+        # Fallback 1: opencode relay quality tier (SAME relay/key - shares quota)
         m2 = os.getenv("FALLBACK_MODEL_2")
         if m2:
             try:
                 fallbacks.append(OpenAIRelayTranslator(
-                    api_key=relay_key, model=m2, base_url=base_url))
+                    api_key=relay_key, model=m2, base_url=relay_base_url))
             except Exception as e:
                 logger.error(f"Relay translator {m2} init failed: {e}")
+        
+        # Fallback 2: OpenRouter FREE models (DIFFERENT provider/key - separate quota)
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        if openrouter_key:
+            try:
+                fallbacks.append(OpenAIRelayTranslator(
+                    api_key=openrouter_key,
+                    model="google/gemma-4-31b-it:free",
+                    base_url="https://openrouter.ai/api/v1"))
+            except Exception as e:
+                logger.error(f"OpenRouter fallback init failed: {e}")
+            
+            try:
+                fallbacks.append(OpenAIRelayTranslator(
+                    api_key=openrouter_key,
+                    model="openai/gpt-oss-20b:free",
+                    base_url="https://openrouter.ai/api/v1"))
+            except Exception as e:
+                logger.error(f"OpenRouter fallback 2 init failed: {e}")
+        
+        # Allow fully custom fallbacks via env vars (FALLBACK_N_API_KEY, FALLBACK_N_BASE_URL, FALLBACK_N_MODEL)
+        for i in range(3, 10):
+            custom_key = os.getenv(f"FALLBACK_{i}_API_KEY")
+            custom_base = os.getenv(f"FALLBACK_{i}_BASE_URL")
+            custom_model = os.getenv(f"FALLBACK_{i}_MODEL")
+            if custom_key and custom_base and custom_model:
+                try:
+                    fallbacks.append(OpenAIRelayTranslator(
+                        api_key=custom_key, model=custom_model, base_url=custom_base))
+                    logger.info(f"Added custom fallback #{i}: {custom_model} @ {custom_base}")
+                except Exception as e:
+                    logger.error(f"Custom fallback #{i} init failed: {e}")
+        
         _translator_instance = FallbackTranslator(primary, fallbacks=fallbacks)
     return _translator_instance
