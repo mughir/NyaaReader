@@ -548,16 +548,16 @@
     template: `
 <div>
   <header class="topbar">
-    <div class="container">
-      <a class="brand" href="/"><span class="logo-mark"><svg class="ic ic-lg"><use href="#i-cat"/></svg></span> NyaaReader</a>
-      <span class="flex-spacer"></span>
-      <nav class="topnav">
-        <a class="nav-link active" href="/"><svg class="ic"><use href="#i-home"/></svg><span class="nav-label">Library</span></a>
-        <a class="nav-link" href="/dashboard"><svg class="ic"><use href="#i-sparkle"/></svg><span class="nav-label">Dashboard</span></a>
+   <div class="container">
+     <a class="brand" href="/"><span class="logo-mark"><svg class="ic ic-lg"><use href="#i-cat"/></svg></span> NyaaReader</a>
+     <span class="flex-spacer"></span>
+     <nav class="topnav">
+        <a class="nav-link" href="/"><svg class="ic"><use href="#i-home"/></svg><span class="nav-label">Library</span></a>
+        <a class="nav-link active" href="/dashboard"><svg class="ic"><use href="#i-sparkle"/></svg><span class="nav-label">Dashboard</span></a>
         <a class="nav-link" href="/config"><svg class="ic"><use href="#i-settings"/></svg><span class="nav-label">Settings</span></a>
-      </nav>
-      <span class="crumb">{{ novel.title_translated || novel.title }}</span>
-    </div>
+     </nav>
+     <span class="crumb">{{ novel.title_translated || novel.title }}</span>
+   </div>
   </header>
 
   <div class="container">
