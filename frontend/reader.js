@@ -77,7 +77,7 @@
       const busy = ref("");          // '', 'fetching', 'translating'
       const error = ref("");
       const pollTimer = ref(null);
-      const ahead = ref({ running: false, done: 0, total: 0, label: "" });
+      const ahead = ref({ running: false, done: 0, total: 0, label: "", kind: null });
       const stoppingAhead = ref(false);
       async function stopAhead() {
         if (stoppingAhead.value) return;
@@ -258,6 +258,13 @@
         autoFetch.value = !autoFetch.value;
         prefs.autoFetch = autoFetch.value;
         savePrefs();
+        // Turning it OFF must also stop a translate-ahead batch that is
+        // already running server-side — flipping the flag alone left the
+        // background job preparing chapters forever.
+        if (!autoFetch.value && ahead.value.kind === "translate-ahead") {
+          stopAhead();
+          ahead.value = { running: false, done: 0, total: 0, label: "", kind: null };
+        }
         // Re-trigger immediately when turned on and the next chapter is raw.
         if (autoFetch.value) {
           const next = (DATA.toc || []).find(c => c.n === chapterNumber + 1);
@@ -388,7 +395,18 @@
       // translated chapters (that would fetch Ch 23+ right after reading Ch 1).
       let aheadTimer = null;
       async function startTranslateAhead() {
-        if (prefs.autoFetch === false) return;
+        if (prefs.autoFetch === false) {
+          // auto-fetch OFF: if a translate-ahead batch is still running
+          // server-side (started before the pref changed, or left over from a
+          // previous session), stop it — but ONLY translate-ahead. A
+          // user-initiated to-end/retranslate/epub job must keep running.
+          try {
+            const r = await fetch(`/api/novels/${novelId}/batch-status`);
+            const b = await r.json();
+            if (b.kind === "translate-ahead" && b.running) stopAhead();
+          } catch (e) {}
+          return;
+        }
         const next = (DATA.toc || []).find(c => c.n === chapterNumber + 1);
         if (next && next.done) return;                 // next chapter already translated — nothing to prefetch
         if (chapterNumber + 1 > (DATA.total || total)) return; // no next chapter
@@ -401,7 +419,15 @@
           try {
             const res = await fetch(`/api/novels/${novelId}/batch-status`);
             const b = await res.json();
-            ahead.value = { running: !!b.running, done: b.done || 0, total: b.total || 0, label: b.current_label || "" };
+            // If the user turned auto-fetch OFF while a translate-ahead job was
+            // already running (e.g. before onMounted fired), stop it instead of
+            // showing a spinner for something they explicitly disabled.
+            if (!autoFetch.value && b.kind === "translate-ahead" && b.running) {
+              stopAhead();
+              ahead.value = { running: false, done: 0, total: 0, label: "", kind: null };
+              return;
+            }
+            ahead.value = { running: !!b.running, done: b.done || 0, total: b.total || 0, label: b.current_label || "", kind: b.kind || null };
             if (!b.running) { clearInterval(aheadTimer); aheadTimer = null; }
           } catch (e) {}
         }, 8000);
@@ -624,6 +650,22 @@
       });
       function jumpDiary() { toggleDiary(); }
 
+      // Human label for the running batch — never claim "Preparing next
+      // chapters…" when the job is actually a user-initiated to-end /
+      // retranslate / check-updates run.
+      const KIND_LABEL = {
+        "translate-ahead": "Preparing next chapters…",
+        "to-end": "Translating entire novel…",
+        retranslate: "Re-translating…",
+        titles: "Translating titles…",
+        match: "Re-translating matches…",
+        updates: "Checking for new chapters…",
+        "retry-failed": "Retrying failed chapters…",
+        epub: "Building EPUB…",
+        "retranslate-drift": "Fixing glossary drift…",
+      };
+      const aheadLabel = computed(() => KIND_LABEL[ahead.value.kind] || "Working…");
+
       onMounted(() => {
         document.documentElement.setAttribute("data-theme", theme.value);
         setFontFamily(fontFamily.value);
@@ -658,7 +700,7 @@
         translated, original, isTranslated, hasOriginal, displayText, paragraphs, originalParas,
         hoverPara, hoverPos, hoverOriginal, showHover, hideHover, onParaOver, onParaOut,
         bmOpen, bmList, bmSel, bmNote, bmSaving, selPop,
-        titleTranslated, novelTitleTranslated, ahead, stoppingAhead, stopAhead,
+        titleTranslated, novelTitleTranslated, ahead, stoppingAhead, stopAhead, aheadLabel, KIND_LABEL,
         tocOpen, tocQuery, tocList, tocFiltered, tocJump,
         memOpen, memLoading, memSaving, memSaved, memError, gloss,
         fontFamily, readerWidth, focusMode, settingsOpen, autoFetch,
@@ -744,11 +786,14 @@
     <!-- translate-ahead progress -->
     <div v-if="ahead.running" class="banner ahead-bar">
       <span class="spinner"></span>
-      <span><strong>Preparing next chapters…</strong> {{ ahead.done }}/{{ ahead.total }} · {{ ahead.label }}</span>
+      <span><strong>{{ aheadLabel }}</strong> {{ ahead.done }}/{{ ahead.total }} · {{ ahead.label }}</span>
       <div class="mini-bar"><div :style="{width: (ahead.total ? ahead.done/ahead.total*100 : 0) + '%'}"></div></div>
       <button class="btn danger small" @click="stopAhead" :disabled="stoppingAhead">{{ stoppingAhead ? 'Stopping…' : '⏹ Stop' }}</button>
     </div>
-    <div v-else-if="!ahead.running && ahead.total > 0" class="banner" style="opacity:.75">
+    <div v-else-if="!ahead.running && ahead.total > 0 && ahead.kind !== 'translate-ahead'" class="banner" style="opacity:.75">
+      ✓ {{ ahead.kind ? KIND_LABEL[ahead.kind] || ahead.kind : 'Batch' }} finished — ready when you are.
+    </div>
+    <div v-else-if="!ahead.running && ahead.kind === 'translate-ahead' && ahead.total > 0" class="banner" style="opacity:.75">
       ✓ Next chapters translated in the background — they're ready when you are.
     </div>
 
