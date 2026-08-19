@@ -15,6 +15,100 @@ import urllib.error
 
 logger = logging.getLogger("novel-reader.translator")
 
+logger = logging.getLogger("novel-reader.translator")
+
+load_dotenv()
+
+
+class CircuitBreaker:
+    """Circuit breaker for relay/translator failures.
+    
+    States: CLOSED (normal) -> OPEN (failing) -> HALF_OPEN (testing recovery)
+    """
+    
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        recovery_timeout: int = 60,
+        half_open_max_calls: int = 3,
+    ):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.half_open_max_calls = half_open_max_calls
+        
+        self._failure_count = 0
+        self._success_count = 0
+        self._state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+        self._last_failure_time = None
+        self._half_open_calls = 0
+        self._lock = asyncio.Lock()
+    
+    @property
+    def state(self) -> str:
+        return self._state
+    
+    async def call(self, func, *args, **kwargs):
+        """Execute function with circuit breaker protection."""
+        async with self._lock:
+            if self._state == "OPEN":
+                if time.time() - self._last_failure_time >= self.recovery_timeout:
+                    self._state = "HALF_OPEN"
+                    self._half_open_calls = 0
+                    logger.info("Circuit breaker: OPEN -> HALF_OPEN")
+                else:
+                    raise RuntimeError(f"Circuit breaker OPEN (retry in {self.recovery_timeout - int(time.time() - self._last_failure_time)}s)")
+            
+            if self._state == "HALF_OPEN" and self._half_open_calls >= self.half_open_max_calls:
+                raise RuntimeError("Circuit breaker HALF_OPEN: max test calls reached")
+            
+            if self._state == "HALF_OPEN":
+                self._half_open_calls += 1
+        
+        try:
+            result = await func() if asyncio.iscoroutinefunction(func) else func()
+            async with self._lock:
+                self._on_success()
+            return result
+        except Exception as e:
+            async with self._lock:
+                self._on_failure()
+            raise
+    
+    def _on_success(self):
+        if self._state == "HALF_OPEN":
+            self._success_count += 1
+            if self._success_count >= self.half_open_max_calls:
+                self._state = "CLOSED"
+                self._failure_count = 0
+                self._success_count = 0
+                logger.info("Circuit breaker: HALF_OPEN -> CLOSED")
+        else:
+            self._failure_count = 0
+    
+    def _on_failure(self):
+        self._failure_count += 1
+        self._last_failure_time = time.time()
+        
+        if self._state == "HALF_OPEN":
+            self._state = "OPEN"
+            logger.warning("Circuit breaker: HALF_OPEN -> OPEN (failure)")
+        elif self._state == "CLOSED" and self._failure_count >= self.failure_threshold:
+            self._state = "OPEN"
+            logger.warning(f"Circuit breaker: CLOSED -> OPEN (threshold {self.failure_threshold} reached)")
+    
+    def reset(self):
+        self._state = "CLOSED"
+        self._failure_count = 0
+        self._success_count = 0
+        self._half_open_calls = 0
+        self._last_failure_time = None
+
+
+class CircuitBreakerError(RuntimeError):
+    """Raised when circuit breaker rejects a call."""
+    pass
+
+
 load_dotenv()
 
 

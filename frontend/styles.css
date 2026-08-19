@@ -430,7 +430,7 @@ body.toolbar-hidden .reader-toolbar { transform: translateY(-100%); opacity: 0; 
 .btn.danger:hover { background: var(--danger); color: #fff; }
 
 .card-actions { display: flex; gap: 6px; margin-top: 8px; }
-.card-actions .btn { font-size: 12px; padding: 4px 10px; }
+.card-actions .btn { font-size: 12px; padding: 4px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
 .btn.accent { background: var(--accent); color: #fff; }
 .btn.accent:hover { filter: brightness(1.1); }
 .shelf-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 20px 0 8px; }

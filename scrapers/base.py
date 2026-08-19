@@ -74,6 +74,7 @@ class BaseScraper(ABC):
         if headers:
             default_headers.update(headers)
 
+        last_exception = None
         for attempt in range(self.max_retries):
             try:
                 await self._rate_limit()
@@ -83,10 +84,19 @@ class BaseScraper(ABC):
                     elif response.status == 404:
                         logger.warning(f"404 Not Found: {url}")
                         return None
+                    elif response.status == 429:
+                        # Rate limited - wait longer
+                        retry_after = int(response.headers.get("Retry-After", 60))
+                        logger.warning(f"Rate limited (429), waiting {retry_after}s: {url}")
+                        await asyncio.sleep(min(retry_after, 120))
+                    elif response.status >= 500:
+                        logger.warning(f"Server error {response.status}: {url}")
                     else:
                         logger.warning(f"HTTP {response.status}: {url}")
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout fetching {url} (attempt {attempt + 1}/{self.max_retries})")
+            except aiohttp.ClientError as e:
+                logger.warning(f"Client error fetching {url}: {e} (attempt {attempt + 1}/{self.max_retries})")
             except Exception as e:
                 logger.warning(f"Error fetching {url}: {e} (attempt {attempt + 1}/{self.max_retries})")
 
