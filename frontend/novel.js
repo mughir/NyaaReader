@@ -72,7 +72,10 @@
       const contentResults = ref([]);
       const contentSearching = ref(false);
       const contentSearched = ref(false);
-      const listPage = ref(1);          // chapter-list pagination
+      // chapter-list pagination — init from ?page=N URL param so refresh /
+      // browser-back keeps your place (server-rendered page, no SPA routing)
+      const INIT_PAGE = Math.max(1, parseInt(new URLSearchParams(location.search).get("page") || "1", 10) || 1);
+      const listPage = ref(INIT_PAGE);
       const PER_PAGE = 40;
       const fetching = ref(false);
       const deleting = ref(false);
@@ -105,14 +108,26 @@
       });
       const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / PER_PAGE)));
 
+      function syncPageUrl(p) {
+        // keep ?page=N in the URL without reloading (replaceState, not pushState)
+        try {
+          const u = new URL(location.href);
+          const clamped = Math.max(1, p);
+          if (clamped === 1) u.searchParams.delete("page");
+          else u.searchParams.set("page", String(clamped));
+          history.replaceState(null, "", u.toString());
+        } catch (e) { /* noop */ }
+      }
       function goListPage(delta) {
         const n = Math.min(totalPages.value, Math.max(1, listPage.value + delta));
         listPage.value = n;
+        syncPageUrl(n);
         window.scrollTo({ top: 0, behavior: "smooth" });
       }
       function goToPage(n) {
         const p = Math.min(totalPages.value, Math.max(1, parseInt(n) || 1));
         listPage.value = p;
+        syncPageUrl(p);
         window.scrollTo({ top: 0, behavior: "smooth" });
       }
       // Page-number buttons with ellipsis: [1] … [4] [5] [6] … [12]
@@ -140,7 +155,15 @@
         if (el) { const v = el.value; if (v) { goToPage(v); el.value = ""; } }
       }
       // Reset to page 1 when search/filter changes
-      watch([q, filter], () => { listPage.value = 1; });
+      watch([q, filter], () => { listPage.value = 1; syncPageUrl(1); });
+
+      // If the URL asked for a page beyond the real range (stale link, fewer
+      // chapters now), clamp to the last page and fix the URL once.
+      // immediate: fires with the initial computed value too (a lazy watcher
+      // would never run if totalPages settles without changing).
+      watch(totalPages, (tp) => {
+        if (listPage.value > tp) { listPage.value = tp; syncPageUrl(tp); }
+      }, { immediate: true });
 
       // Full-text search inside translated content (UI 3)
       async function searchContent() {
