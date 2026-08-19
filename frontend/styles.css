@@ -111,24 +111,14 @@ body, .toc-list, .reader-content, .hero .desc, .mem-body, .para-orig-pop {
 .topbar .crumb::before { content: "›"; margin-right: 10px; color: var(--border); font-size: 15px; }
 .topbar .crumb a { color: var(--text-dim); }
 .topbar .crumb a:hover { color: var(--accent-strong); }
-.topbar .nav-count {
-    background: var(--muted);
-    color: var(--text-muted);
-    padding: 4px 10px;
-    border-radius: 999px;
-    font-size: 12px;
-    font-weight: 500;
-    white-space: nowrap;
-    user-select: none;
-    pointer-events: none;
-    cursor: default;
-  }
 .topbar .flex-spacer { flex: 1; }
 .topbar .topnav { display: flex; align-items: center; gap: 4px; margin-left: 6px; }
 .topbar .nav-link {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 12px; border-radius: 8px; font-size: 13.5px;
   color: var(--text-dim); font-weight: 500; white-space: nowrap;
+  min-width: 96px; /* equalize button widths */
+  justify-content: center;
 }
 .topbar .nav-link:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
 .topbar .nav-link.active { background: var(--accent-soft); color: var(--accent-strong); font-weight: 600; }
