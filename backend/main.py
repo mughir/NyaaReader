@@ -488,7 +488,8 @@ def translate_novel_meta_bg(novel_id: int):
             return
         if novel.title_translated and novel.description_translated:
             return
-        _set_batch(novel_id, "meta", 2)
+        if not _set_batch(novel_id, "meta", 2):
+            return
         translator = get_translator()
         try:
             if _batch_stop_requested(novel_id):
@@ -562,8 +563,10 @@ async def fetch_initial_chapters(novel_id: int, auto_translate: bool):
                             chapter.translated_word_count = result.output_tokens * 4
                             chapter.translation_model = result.model_used
                             chapter.translation_cost = result.estimated_cost
-            # Politeness delay after each fetch (rate-limit protection)
-            _sleep_between_fetches()
+            # Politeness delay after each fetch (rate-limit protection).
+            # async sleep — this runs on the event loop; time.sleep would
+            # freeze the whole server for 15s per chapter.
+            await asyncio.sleep(FETCH_DELAY_SECONDS)
 
             db.commit()
     finally:
@@ -617,7 +620,10 @@ async def translate_chapter(
     chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
-    return _translate_chapter(db, chapter, request.quality, request.force_retranslate)
+    # The relay call is blocking (up to 180s x retries) — run it off the event
+    # loop so one translation doesn't freeze every other request.
+    return await asyncio.to_thread(
+        _translate_chapter, db, chapter, request.quality, request.force_retranslate)
 
 
 def _load_glossary(mem_row) -> Optional[list]:
@@ -912,7 +918,8 @@ def translate_to_end_bg(novel_id: int):
                     .order_by(Chapter.chapter_number).all())
         if not chapters:
             return
-        _set_batch(novel_id, "to-end", len(chapters))
+        if not _set_batch(novel_id, "to-end", len(chapters)):
+            return
         for ch in chapters:
             if _batch_stop_requested(novel_id):
                 logger.info(f"translate-to-end stopped by user (novel {novel_id})")
@@ -985,7 +992,8 @@ def retranslate_match_bg(novel_id: int, needle: str):
         ).order_by(Chapter.chapter_number).all()
         if not chapters:
             return
-        _set_batch(novel_id, "match", len(chapters))
+        if not _set_batch(novel_id, "match", len(chapters)):
+            return
         for ch in chapters:
             try:
                 _translate_chapter(db, ch, quality="balanced", force=True)
@@ -1062,7 +1070,8 @@ def check_updates_bg(novel_id: int):
         db.commit()
         logger.info(f"check-updates novel {novel_id}: added {added} new chapters")
         # Translate the first few new chapters (translate-ahead handles the rest while reading)
-        _set_batch(novel_id, "updates", added)
+        if not _set_batch(novel_id, "updates", added):
+            return
         for ch in db.query(Chapter).filter(
                 Chapter.novel_id == novel_id, Chapter.is_translated == False
         ).order_by(Chapter.chapter_number).limit(min(added, 5)).all():
@@ -1151,7 +1160,8 @@ def _export_epub_bg(novel_id: int):
             Chapter.is_translated == True,
             Chapter.translated_content.isnot(None),
         ).order_by(Chapter.chapter_number).all())
-        _set_batch(novel_id, "epub", len(chapters))
+        if not _set_batch(novel_id, "epub", len(chapters)):
+            return
 
         book = epub.EpubBook()
         book.set_identifier(f"nyaa-{novel_id}")
@@ -1447,7 +1457,8 @@ def _retranslate_drift_bg(novel_id: int, chapter_numbers: list):
     from database import SessionLocal
     db = SessionLocal()
     try:
-        _set_batch(novel_id, "retranslate-drift", len(chapter_numbers))
+        if not _set_batch(novel_id, "retranslate-drift", len(chapter_numbers)):
+            return
         for n in chapter_numbers:
             ch = db.query(Chapter).filter(
                 Chapter.novel_id == novel_id, Chapter.chapter_number == n).first()
@@ -1539,7 +1550,8 @@ def translate_titles_bg(novel_id: int):
         if not chapters:
             return
         translator = get_translator()
-        _set_batch(novel_id, "titles", len(chapters))
+        if not _set_batch(novel_id, "titles", len(chapters)):
+            return
         for ch in chapters:
             if _batch_stop_requested(novel_id):
                 logger.info(f"translate-titles stopped by user (novel {novel_id})")
@@ -1611,7 +1623,8 @@ def _retranslate_bg(novel_id: int):
             Chapter.novel_id == novel_id, Chapter.is_translated == True,
             Chapter.original_content.isnot(None),
         ).order_by(Chapter.chapter_number).all()
-        _set_batch(novel_id, "retranslate", len(chapters))
+        if not _set_batch(novel_id, "retranslate", len(chapters)):
+            return
         for ch in chapters:
             if _batch_stop_requested(novel_id):
                 logger.info(f"retranslate stopped by user (novel {novel_id})")
@@ -2242,7 +2255,8 @@ def _retry_failed_bg(novel_id: int):
         ).order_by(Chapter.chapter_number).all()
         if not failed:
             return
-        _set_batch(novel_id, "retry-failed", len(failed))
+        if not _set_batch(novel_id, "retry-failed", len(failed)):
+            return
         for ch in failed:
             if _batch_stop_requested(novel_id):
                 logger.info(f"retry-failed stopped by user (novel {novel_id})")
@@ -2401,7 +2415,7 @@ async def get_config():
     cfg = _get_config()
     import os as _os
     masked = {}
-    for k in ("gemini_api_key", "fallback_api_key", "auth_password"):
+    for k in ("gemini_api_key", "fallback_api_key", "auth_password", "fallback_2_api_key"):
         v = cfg.get(k, "")
         masked[k] = (v[-4:] if len(v) >= 4 else "") if v else ""
         # A key "counts as set" if it's in the DB OR actually available in the
@@ -2411,7 +2425,7 @@ async def get_config():
             v = _os.getenv("FALLBACK_API_KEY", "")
         masked[k + "_set"] = bool(v)
     # strip the raw secret values, keep the masked copies
-    out = {k: v for k, v in cfg.items() if k not in ("gemini_api_key", "fallback_api_key", "auth_password")}
+    out = {k: v for k, v in cfg.items() if k not in ("gemini_api_key", "fallback_api_key", "auth_password", "fallback_2_api_key")}
     return {**out, **masked}
 
 
@@ -2624,8 +2638,26 @@ async def restore_backup(file: UploadFile):
         except Exception:
             _os.remove(staging)
             raise HTTPException(status_code=400, detail="Uploaded file is not a valid SQLite database")
+        import sqlite3 as _sqlite2
         import shutil as _shutil
-        _shutil.copy2(staging, db_path)  # replace live DB
+        # Swap the restored file in using SQLite's own backup API against a
+        # fresh connection to the staging file — copying bytes over the live
+        # DB while pooled connections hold it open (and WAL sidecars exist)
+        # can tear the database or resurrect stale WAL pages.
+        _shutil.copy2(staging, db_path + ".restored-new")
+        dst = _sqlite2.connect(db_path)
+        try:
+            dst.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            src_conn = _sqlite2.connect(db_path + ".restored-new")
+            try:
+                dst.backup(src_conn)
+            finally:
+                src_conn.close()
+        finally:
+            dst.close()
+        import os as _os2
+        try: _os2.remove(db_path + ".restored-new")
+        except OSError: pass
     except HTTPException:
         raise
     except Exception as e:
@@ -3065,7 +3097,10 @@ if ('serviceWorker' in navigator) {{
 
 
 def _json(data) -> str:
-    return json.dumps(data, ensure_ascii=False)
+    """JSON for embedding inside <script> tags. Escapes "</" so a scraped
+    title like `</script><img onerror=...>` cannot break out of the script
+    block (classic JSON-in-HTML XSS)."""
+    return json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
 
 
 @app.get("/", response_class=HTMLResponse)
