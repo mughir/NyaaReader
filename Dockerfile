@@ -17,6 +17,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./
 # Copy scrapers
 COPY scrapers/ ./scrapers/
+# Copy frontend (served at /static; compose bind-mount overrides for dev)
+COPY frontend/ ./frontend/
 
 # Create data dir for SQLite
 RUN mkdir -p /app/data
