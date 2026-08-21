@@ -125,8 +125,11 @@ class BaseScraper(ABC):
         # Remove excessive whitespace
         content = re.sub(r"\n{3,}", "\n\n", content)
         content = re.sub(r"[ \t]{2,}", " ", content)
-        # Remove common noise
-        content = re.sub(r"(?i)(chapter \d+|第.+?章|第.+?話|제.+?화)", "", content)
+        # Remove chapter-heading lines ONLY when the line is a heading — the old
+        # unanchored pattern deleted every in-sentence occurrence of "chapter N".
+        content = re.sub(
+            r"(?im)^[ \t]*(?:chapter\s*\d+[:.\s–-]{0,3}[^\n]{0,60}|第[^\n]{1,20}章[：:\s]*|제[^\n]{1,20}화[：:\s]*)[ \t]*$",
+            "", content)
         return content.strip()
 
     def _detect_language(self, text: str) -> str:

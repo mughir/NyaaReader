@@ -33,6 +33,9 @@ class Novel(Base):
     settings = relationship("NovelSettings", back_populates="novel", uselist=False, cascade="all, delete-orphan")
     memory = relationship("NovelMemory", back_populates="novel", uselist=False, cascade="all, delete-orphan")
     bookmarks = relationship("Bookmark", back_populates="novel", cascade="all, delete-orphan")
+    diary_entries = relationship("DiaryEntry", cascade="all, delete-orphan", overlaps="novel")
+    reading_progress = relationship("ReadingProgress", cascade="all, delete-orphan", overlaps="novel")
+    batch_jobs = relationship("BatchJob", cascade="all, delete-orphan", overlaps="novel")
 
 
 class Chapter(Base):
@@ -175,6 +178,10 @@ class DiaryEntry(Base):
 
     novel = relationship("Novel")
     chapter = relationship("Chapter")
+
+# NOTE: Novel.delete cascades to diary_entries via the relationship above —
+# chapter_id is NOT NULL, so without the cascade a novel delete would emit
+# UPDATE diary_entries SET chapter_id=NULL and fail with an IntegrityError.
 
 
 class BatchJob(Base):
