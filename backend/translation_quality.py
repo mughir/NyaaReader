@@ -452,7 +452,7 @@ class TranslationQualityIndicator:
             elif issue == TranslationQualityIssue.FORMAL_TONE_NEEDED:
                 suggestions.append("Consider using more formal language for professional or respectful contexts.")
                 
-            elif issue == TranslationQualityIssue.INFORMAL_TONE_NEEDED:
+            elif issue == TranslationQualityIssue.INFORMAL_TONE:
                 suggestions.append("Make the translation more conversational and less formal.")
         
         return suggestions

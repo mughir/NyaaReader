@@ -70,10 +70,14 @@ def get_scraper_for_url(url: str, **kwargs) -> Optional[BaseScraper]:
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
-    domain = parsed.netloc.lower().replace("www.", "")
+    domain = parsed.netloc.lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
 
     for pattern, scraper_class in SCRAPER_REGISTRY.items():
-        if pattern in domain:
+        # Exact or subdomain match only — substring matching would let
+        # evil-novel543.com hijack a plugin registered for novel543.com.
+        if domain == pattern or domain.endswith("." + pattern):
             return scraper_class(**kwargs)
 
     # Universal fallback: LLM-powered generic extraction

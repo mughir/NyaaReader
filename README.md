@@ -40,13 +40,13 @@ NyaaReader is a cozy, self-hosted reader for Japanese / Chinese / Korean web nov
 
 2. **Start Nyaa:**
    ```bash
-   docker-compose up --build -d
+   docker compose up --build -d
    ```
    (or double-click `start.bat`)
 
 3. **Open:** http://localhost:8080 🐱
 
-4. **Add a novel:** paste a supported novel URL (novel543.com or syosetu.com — the first 5 chapters auto-fetch + translate in the background).
+4. **Add a novel:** paste any novel page URL — the AI scraper handles unknown sites automatically (LLM extraction; the first 5 chapters auto-fetch + translate in the background). Site-specific plugins for e.g. syosetu-style sites can be dropped into `scrapers/` (see `scrapers/example_plugin.py`).
 
 ---
 

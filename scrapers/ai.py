@@ -136,12 +136,12 @@ class AIScraper(BaseScraper):
         if len(text) < 200:
             logger.warning(f"AIScraper: page too short to extract ({len(text)} chars) — may be JS-rendered")
 
-        # Real chapter links found in the raw HTML (fallback + validator)
+        # Real chapter links from parsed attributes (covers single/double-quoted
+        # hrefs — the old raw-HTML regex only matched double quotes)
         real_links = []
-        for m in re.finditer(r'href="([^"]+)"', html):
-            href = m.group(1)
-            if re.search(r"(chapter|/ch/|/read/)", href, re.I):
-                real_links.append(urljoin(url, href))
+        for tag in soup.find_all("a", href=True):
+            if re.search(r"(chapter|/ch/|/read/)", tag["href"], re.I):
+                real_links.append(urljoin(url, tag["href"]))
         # de-dup preserving order
         seen = set()
         real_links = [l for l in real_links if not (l in seen or seen.add(l))]

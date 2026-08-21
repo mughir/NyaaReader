@@ -171,6 +171,23 @@ frontend_path = next(
 )
 
 
+_auth_flag_cache = {"value": None, "ts": 0.0}
+
+
+def _auth_enabled_cached() -> bool:
+    """_auth_enabled() hits the DB; the auth middleware runs on EVERY request.
+    Cache the flag for a few seconds so config reads stay cheap."""
+    import time as _t
+    now = _t.time()
+    if _auth_flag_cache["ts"] < now - 5:
+        try:
+            _auth_flag_cache["value"] = _auth_enabled()
+        except Exception:
+            _auth_flag_cache["value"] = False
+        _auth_flag_cache["ts"] = now
+    return _auth_flag_cache["value"]
+
+
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
     """When auth is enabled, require a valid session cookie for everything
@@ -181,7 +198,7 @@ async def auth_guard(request: Request, call_next):
             or path == "/api/auth/login" or path == "/api/auth/logout"
             or path == "/api/auth/status"):
         return await call_next(request)
-    if not _auth_enabled():
+    if not _auth_enabled_cached():
         return await call_next(request)
     cookie = request.cookies.get(_COOKIE_NAME)
     if cookie and _verify_session(cookie):
@@ -1678,6 +1695,8 @@ async def update_progress(
         percentage = payload.percentage
     if not chapter_id:
         raise HTTPException(status_code=422, detail="chapter_id required")
+    if not db.query(Chapter).filter(Chapter.id == chapter_id, Chapter.novel_id == novel_id).first():
+        raise HTTPException(status_code=404, detail="Chapter not found in this novel")
     progress = db.query(ReadingProgress).filter(
         ReadingProgress.novel_id == novel_id
     ).first()
@@ -1914,7 +1933,7 @@ async def fetch_more_chapters(
     novel_id: int,
     start: int = 1,
     count: int = 10,
-    translate: bool = True,
+    translate: Optional[bool] = None,
     background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db_session)
 ):
@@ -2196,8 +2215,16 @@ def _resume_interrupted_jobs():
     try:
         stale = db.query(BatchJob).filter(BatchJob.running == True).all()
         for job in stale:
+            # Kinds that can't auto-resume (need per-call args) must NOT stay
+            # "running" — that would block all new batches for the novel until
+            # the watchdog stall-frees them 10 minutes later.
+            if job.kind in ("translate-ahead", "match", "retranslate-drift"):
+                logger.info(f"Not resuming {job.kind} for novel {job.novel_id} (needs args) — marking finished")
+                job.running = False
+                continue
             logger.info(f"Resuming interrupted {job.kind} job for novel {job.novel_id}")
             _launch_batch(job.novel_id, job.kind)
+        db.commit()
     finally:
         db.close()
 
@@ -2602,6 +2629,8 @@ async def download_backup(name: str):
     """Download a backup file."""
     import os as _os
     safe = _os.path.basename(name)
+    if not safe or safe in (".", ".."):
+        raise HTTPException(status_code=400, detail="Invalid backup name")
     path = _os.path.join(_backup_dir(), safe)
     if not _os.path.exists(path):
         raise HTTPException(status_code=404, detail="Backup not found")
@@ -3051,6 +3080,16 @@ def _asset_stamp() -> str:
         return "0"
 
 
+# Loaded once at import; a missing file degrades to an empty sprite instead of
+# 500-ing every HTML page.
+try:
+    with open(os.path.join(frontend_path or ".", "icons.svg"), encoding="utf-8") as _f:
+        _icons_sprite_cache = _f.read()
+except OSError:
+    logger.warning("icons.svg not found — pages will render without the icon sprite")
+    _icons_sprite_cache = ""
+
+
 def _page(title: str, body: str, page_js: Optional[str] = None,
           data_js: Optional[str] = None, refresh: Optional[int] = None) -> HTMLResponse:
     refresh_tag = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ""
@@ -3062,9 +3101,7 @@ def _page(title: str, body: str, page_js: Optional[str] = None,
             f'<script src="/static/vendor/vue.global.prod.js?v={stamp}"></script>\n'
             f'<script src="/static/{page_js}?v={stamp}"></script>'
         )
-    icons_sprite = open(
-        os.path.join(frontend_path, "icons.svg"), encoding="utf-8"
-    ).read()
+    icons_sprite = _icons_sprite_cache
     return HTMLResponse(f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3285,17 +3322,6 @@ async def translate_chapter_page(
             f"/novel/{novel_id}/chapter/{chapter_number}?translating=1", status_code=303
         )
     return RedirectResponse(f"/novel/{novel_id}/chapter/{chapter_number}", status_code=303)
-
-
-@app.post("/api/novels/{novel_id}/translate-meta")
-async def translate_meta(novel_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db_session)):
-    """Translate a novel's title + description (background)."""
-    novel = db.query(Novel).filter(Novel.id == novel_id).first()
-    if not novel:
-        raise HTTPException(status_code=404, detail="Novel not found")
-    if not (novel.title_translated and novel.description_translated):
-        background_tasks.add_task(translate_novel_meta_bg, novel_id)
-    return {"status": "started"}
 
 
 @app.post("/api/novels/{novel_id}/chapters/{chapter_number}/translate")

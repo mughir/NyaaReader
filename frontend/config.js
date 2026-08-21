@@ -97,7 +97,6 @@
             if (!hc.models.model && cfg.value.fallback_model) {
               err.value = `Model "${cfg.value.fallback_model}" was not found on the relay — cleared. Re-check the name.`;
               cfg.value.fallback_model = "";
-              cfg.fallback_model = "";
             } else if (cfg.value.fallback_model_2 && hc.models.model_2 === false) {
               err.value = `Model 2 "${cfg.value.fallback_model_2}" was not found on the relay — cleared.`;
               cfg.value.fallback_model_2 = "";
