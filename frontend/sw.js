@@ -16,6 +16,8 @@ const SHELL = [
   "/static/reader.js",
   "/static/review.js",
   "/static/config.js",
+  "/static/dashboard.js",
+  "/static/login.js",
   "/static/manifest.json",
 ];
 

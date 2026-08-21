@@ -281,10 +281,19 @@
 
       function startPolling(everyMs, done) {
         clearInterval(pollTimer.value);
-        // Hard timeout so "Translating…" never spins forever if the bg job dies
-        const deadline = Date.now() + 5 * 60 * 1000;
+        // Hard timeout so "Translating…" never spins forever if the bg job dies.
+        // Large chapters can legitimately take >5 min, and a premature timeout
+        // invites a duplicate (double-billed) translate click — check batch-status
+        // before declaring failure, and use a generous deadline.
+        const deadline = Date.now() + 15 * 60 * 1000;
         pollTimer.value = setInterval(async () => {
           if (Date.now() > deadline) {
+            // Is a batch job still working on this novel? If so, keep the
+            // spinner honest instead of telling the user to retry.
+            try {
+              const bs = await fetch(`/api/novels/${novelId}/batch-status`).then(x => x.json());
+              if (bs && bs.running) return; // keep polling quietly
+            } catch (e) {}
             clearInterval(pollTimer.value);
             busy.value = "";
             error.value = "Translation timed out — try again.";
