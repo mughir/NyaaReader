@@ -361,7 +361,7 @@ async def add_novel_manual(novel_data: NovelManualCreate, db: Session = Depends(
         author=novel_data.author or "",
         description=novel_data.description or "",
         cover_url=novel_data.cover_url or "",
-        source_url=novel_data.source_url or f"manual://{slugify(novel_data.title)}",
+        source_url=novel_data.source_url or f"manual://{re.sub(r'[^a-z0-9]+', '-', novel_data.title.lower()).strip('-')}",
         source_site="manual",
         original_language=novel_data.original_language or "zh",
         target_language=novel_data.target_language or "en",
@@ -2463,7 +2463,7 @@ async def put_config(payload: dict, db: Session = Depends(get_db_session)):
 
 
 @app.post("/api/config/health-check")
-async def config_health_check(payload: dict = None):
+def config_health_check(payload: dict = None):
     """Verify relay credentials before saving (Settings save-time check).
 
     Step 1 — key + base URL: GET {base_url}/models with the key.

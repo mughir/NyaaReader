@@ -7,6 +7,7 @@ for enhanced translation quality and user customization.
 import asyncio
 import hashlib
 import logging
+import time
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from enum import Enum
