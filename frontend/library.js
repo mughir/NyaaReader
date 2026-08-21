@@ -33,7 +33,11 @@
       }
       // Cover fallback: gradient + initial when no image
       function coverStyle(n) {
-        if (n.cover_url) return { backgroundImage: `url(${n.cover_url})`, backgroundSize: "cover", backgroundPosition: "center" };
+        if (n.cover_url) {
+        // Sanitize: a crafted cover_url with ')' or ';' could inject CSS.
+        const safe = String(n.cover_url).replace(/[\s'"();]/g, "");
+        return { backgroundImage: `url(${safe})`, backgroundSize: "cover", backgroundPosition: "center" };
+      }
         const hue = (n.id * 47) % 360;
         return {
           background: `linear-gradient(150deg, hsl(${hue},55%,42%), hsl(${(hue + 45) % 360},62%,26%) 65%, hsl(${(hue + 90) % 360},65%,18%))`,
@@ -74,8 +78,9 @@
           const novel = await res.json();
           notice.value = `Added "${novel.title_translated || novel.title}" — fetching first chapters in background.`;
           url.value = "";
-          const list = await (await fetch("/api/novels")).json();
-          novels.value = list; shown.value = list;
+          // Don't re-fetch /api/novels here — its rows lack translated_chapters/
+          // read_chapters/last_read, so replacing the cards wipes progress bars
+          // and drops the active shelf filter. We redirect in ~1s anyway.
           setTimeout(() => { window.location.href = "/novel/" + novel.id; }, 900);
         } catch (e) {
           error.value = e.message;
