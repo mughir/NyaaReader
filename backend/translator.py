@@ -235,7 +235,7 @@ class AdaptiveRateLimiter:
         self.strategy = strategy
         self.max_retries = max_retries
         self.backoff_multiplier = backoff_multiplier
-        self.max_backoff_seconds = max_backset_seconds
+        self.max_backoff_seconds = max_backoff_seconds
         
         # Per-provider rate limiters
         self._limiters: Dict[str, RateLimitEntry] = {}
