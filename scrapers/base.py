@@ -86,9 +86,20 @@ class BaseScraper(ABC):
                         return None
                     elif response.status == 429:
                         # Rate limited - wait longer
-                        retry_after = int(response.headers.get("Retry-After", 60))
+                        raw = response.headers.get("Retry-After", "60")
+                        try:
+                            retry_after = int(raw)
+                        except ValueError:
+                            # HTTP-date form — parse it, else fall back to 60s
+                            from email.utils import parsedate_to_datetime
+                            from datetime import datetime as _dt, timezone as _tz
+                            try:
+                                retry_after = max(0, (parsedate_to_datetime(raw) - _dt.now(_tz.utc)).total_seconds())
+                            except Exception:
+                                retry_after = 60
                         logger.warning(f"Rate limited (429), waiting {retry_after}s: {url}")
                         await asyncio.sleep(min(retry_after, 120))
+                        continue  # already waited — skip the extra backoff below
                     elif response.status >= 500:
                         logger.warning(f"Server error {response.status}: {url}")
                     else:
