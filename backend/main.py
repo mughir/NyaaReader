@@ -633,7 +633,11 @@ async def translate_chapter(
     request: TranslateRequest,
     db: Session = Depends(get_db_session)
 ):
-    """Translate a chapter using AI (memory-aware: reads & updates per-novel memory)."""
+    """Translate a chapter using AI (memory-aware: reads & updates per-novel memory).
+
+    Runs the blocking relay call in a worker thread — a slow AI (relay stalls
+    can take minutes) must never occupy the event loop, or every other page
+    and request freezes behind it."""
     chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
@@ -909,7 +913,7 @@ async def translate_to_end(novel_id: int, background_tasks: BackgroundTasks = No
     novel = db.query(Novel).filter(Novel.id == novel_id).first()
     if not novel:
         raise HTTPException(status_code=404, detail="Novel not found")
-    with _novel_lock(novel_id):
+    async with _async_novel_lock(novel_id):
         if _batch_running(novel_id):
             return {"status": "already_running", "pending": 0}
         pending = db.query(Chapter).filter(
@@ -987,7 +991,7 @@ async def retranslate_match(novel_id: int, payload: dict = None,
     ).count()
     if matched == 0:
         return {"status": "none", "pending": 0}
-    with _novel_lock(novel_id):
+    async with _async_novel_lock(novel_id):
         if _batch_running(novel_id):
             return {"status": "already_running", "pending": 0}
         background_tasks.add_task(retranslate_match_bg, novel_id, needle)
@@ -1034,7 +1038,7 @@ async def check_updates(novel_id: int, background_tasks: BackgroundTasks = None,
     novel = db.query(Novel).filter(Novel.id == novel_id).first()
     if not novel or novel.source_site == "manual":
         raise HTTPException(status_code=404, detail="Novel not found (or manual novel)")
-    with _novel_lock(novel_id):
+    async with _async_novel_lock(novel_id):
         if _batch_running(novel_id):
             return {"status": "already_running"}
         background_tasks.add_task(check_updates_bg, novel_id)
@@ -1133,7 +1137,7 @@ async def export_epub(novel_id: int, background_tasks: BackgroundTasks = None,
     novel = db.query(Novel).filter(Novel.id == novel_id).first()
     if not novel:
         raise HTTPException(status_code=404, detail="Novel not found")
-    with _novel_lock(novel_id):
+    async with _async_novel_lock(novel_id):
         if _batch_running(novel_id):
             return {"status": "already_running"}
         background_tasks.add_task(_export_epub_bg, novel_id)
@@ -1462,7 +1466,7 @@ async def retranslate_drift(novel_id: int, background_tasks: BackgroundTasks = N
                if any(t and t.lower() not in (ch.translated_content or "").lower() for t in locked)]
     if not targets:
         return {"status": "none", "pending": 0, "reason": "no drift found"}
-    with _novel_lock(novel_id):
+    async with _async_novel_lock(novel_id):
         if _batch_running(novel_id):
             return {"status": "already_running", "pending": 0}
         background_tasks.add_task(_retranslate_drift_bg, novel_id, [c.chapter_number for c in targets])
@@ -1509,7 +1513,7 @@ async def retry_failed(novel_id: int, background_tasks: BackgroundTasks = None,
     ).count()
     if count == 0:
         return {"status": "none", "pending": 0}
-    with _novel_lock(novel_id):
+    async with _async_novel_lock(novel_id):
         if _batch_running(novel_id):
             return {"status": "already_running", "pending": 0}
         background_tasks.add_task(_retry_failed_bg, novel_id)
@@ -1543,7 +1547,7 @@ async def translate_titles(novel_id: int, background_tasks: BackgroundTasks = No
     ).count()
     if missing == 0:
         return {"status": "none", "pending": 0}
-    with _novel_lock(novel_id):
+    async with _async_novel_lock(novel_id):
         if _batch_running(novel_id):
             return {"status": "already_running", "pending": 0}
         background_tasks.add_task(translate_titles_bg, novel_id)
@@ -1606,7 +1610,7 @@ async def translate_novel_meta(novel_id: int, background_tasks: BackgroundTasks 
         pending += 1
     if pending == 0:
         return {"status": "none", "pending": 0}
-    with _novel_lock(novel_id):
+    async with _async_novel_lock(novel_id):
         if _batch_running(novel_id):
             return {"status": "already_running", "pending": 0}
         background_tasks.add_task(translate_novel_meta_bg, novel_id)
@@ -1624,7 +1628,7 @@ async def retranslate_novel(novel_id: int, background_tasks: BackgroundTasks, db
         Chapter.novel_id == novel_id, Chapter.is_translated == True).count()
     if count == 0:
         raise HTTPException(status_code=400, detail="No translated chapters to re-translate")
-    with _novel_lock(novel_id):
+    async with _async_novel_lock(novel_id):
         if _batch_running(novel_id):
             return {"status": "already_running", "pending": 0}
         background_tasks.add_task(_retranslate_bg, novel_id)
@@ -1980,6 +1984,22 @@ def _novel_lock(novel_id: int) -> _threading.Lock:
         lock = _batch_locks.get(novel_id)
         if lock is None:
             lock = _batch_locks[novel_id] = _threading.Lock()
+        return lock
+
+
+# Async twin of _novel_lock for async ENDPOINTS. `with _novel_lock()` on the
+# event loop BLOCKS THE WHOLE APP while a batch worker (slow relay AI — minutes
+# per chapter) holds that threading.Lock. Async endpoints must take this
+# asyncio.Lock instead: awaiting yields, so other requests keep being served
+# while a batch runs. (Background worker threads keep using _novel_lock.)
+_async_batch_locks: dict = {}
+
+
+def _async_novel_lock(novel_id: int) -> asyncio.Lock:
+    with _batch_locks_guard:
+        lock = _async_batch_locks.get(novel_id)
+        if lock is None:
+            lock = _async_batch_locks[novel_id] = asyncio.Lock()
         return lock
 
 # Politeness delay between consecutive source fetches (seconds) — avoids rate limits
@@ -2504,7 +2524,7 @@ async def put_config(payload: dict, db: Session = Depends(get_db_session)):
 
 
 @app.post("/api/config/health-check")
-def config_health_check(payload: dict = None):
+async def config_health_check(payload: dict = None):
     """Verify relay credentials before saving (Settings save-time check).
 
     Step 1 — key + base URL: GET {base_url}/models with the key.
@@ -2515,7 +2535,16 @@ def config_health_check(payload: dict = None):
     """
     import os as _os
     import urllib.request, json as _json, urllib.error
-    p = payload or {}
+    # urlopen blocks; run OFF the event loop so Settings saves never freeze
+    # the whole app while the relay is slow (25s timeout × 2 endpoints).
+    p = await asyncio.to_thread(_config_health_check_sync, payload or {})
+    return p
+
+
+def _config_health_check_sync(p: dict) -> dict:
+    """Blocking implementation of the config health check (call via to_thread)."""
+    import os as _os
+    import urllib.request, json as _json, urllib.error
     
     # Test primary relay
     key = (p.get("api_key") or _os.getenv("FALLBACK_API_KEY", "")).strip()
@@ -2745,17 +2774,25 @@ def _backup_scheduler_loop():
 
 @app.on_event("startup")
 async def _startup_reliability():
-    """Startup: resume interrupted jobs + start backup scheduler + watchdog threads."""
+    """Startup: resume interrupted jobs + start backup scheduler + watchdog threads.
+
+    Config application + job resume touch the DB/files synchronously — run them
+    in a worker thread so a slow disk or a stale DB never delays (or blocks)
+    the event loop during startup."""
     try:
-        _apply_config_to_env()
-        _resume_interrupted_jobs()
+        await asyncio.to_thread(_startup_reliability_sync)
     except Exception as e:
-        logger.warning(f"job resume failed: {e}")
+        logger.warning(f"startup reliability failed: {e}")
     import threading
     t = threading.Thread(target=_backup_scheduler_loop, daemon=True)
     t.start()
     w = threading.Thread(target=_watchdog_loop, daemon=True)
     w.start()
+
+
+def _startup_reliability_sync():
+    _apply_config_to_env()
+    _resume_interrupted_jobs()
 
 
 def _fetch_chapter_content_sync(source_url: str, polite_delay: bool = True):
@@ -2863,7 +2900,7 @@ async def translate_ahead(novel_id: int, after_chapter: int,
         Chapter.is_translated == False).count()
     if existing == 0:
         return {"status": "none", "pending": 0}
-    with _novel_lock(novel_id):
+    async with _async_novel_lock(novel_id):
         if _batch_running(novel_id):
             return {"status": "already_running", "pending": 0}
         background_tasks.add_task(translate_ahead_bg, novel_id, after_chapter, count)
