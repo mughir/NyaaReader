@@ -19,6 +19,7 @@ which meant every chapter of every plugin-less novel cost an LLM call forever.
 """
 import json
 import logging
+import os
 import re
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin, urlparse
@@ -30,8 +31,22 @@ from scrapers import learn
 
 logger = logging.getLogger(__name__)
 
+# Defaults only. The models actually used come from the user's Settings, which
+# the backend pushes into these env vars (FALLBACK_MODEL / FALLBACK_MODEL_2 —
+# the same pair the translator reads). See _extract_models().
 EXTRACT_MODEL = "deepseek-v4-flash"       # cheap extraction tier
 EXTRACT_MODEL_2 = "gpt-5.6-luna"          # quality fallback
+
+
+def _extract_models() -> list:
+    """The ordered list of models to try, resolved from user settings at call
+    time. Falls back to the module defaults when Settings/env are unset."""
+    primary = (os.getenv("FALLBACK_MODEL") or "").strip() or EXTRACT_MODEL
+    secondary = (os.getenv("FALLBACK_MODEL_2") or "").strip() or EXTRACT_MODEL_2
+    models = [primary]
+    if secondary and secondary != primary:
+        models.append(secondary)
+    return models
 
 # HTML tag blacklist for boilerplate removal
 BOILERPLATE_TAGS = ["script", "style", "noscript", "iframe", "svg", "canvas",
@@ -139,7 +154,7 @@ class AIScraper(BaseScraper):
         """Lazily build the relay extractor (avoids import-time coupling to
         backend). backend/ is on PYTHONPATH in Docker and local runs alike."""
         from translator import OpenAIRelayTranslator
-        return OpenAIRelayTranslator(model=EXTRACT_MODEL)
+        return OpenAIRelayTranslator(model=_extract_models()[0])
 
     async def _call_llm(self, llm, prompt: str) -> str:
         """Run the relay call in a thread (its _generate is sync/blocking)."""
@@ -150,7 +165,7 @@ class AIScraper(BaseScraper):
         """Run an extraction prompt; try the cheap model, then the quality tier."""
         llm = self._get_llm()
         last_err = None
-        for model in (EXTRACT_MODEL, EXTRACT_MODEL_2):
+        for model in _extract_models():
             try:
                 llm.model_name = model
                 raw = await self._call_llm(llm, prompt)

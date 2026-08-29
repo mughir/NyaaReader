@@ -136,48 +136,15 @@
         return original.value;
       });
 
-      // Split content into paragraphs.
-      //
-      // Two conventions are in play and the reader must survive BOTH: CJK web
-      // novels put one paragraph per LINE (single \n), while a translator may
-      // return blank-line-separated prose. Splitting only on /\n{2,}/ turned a
-      // single-newline chapter into one wall of text -- ~10% of translated
-      // chapters, across several models, since the model's formatting is not
-      // consistent enough to rely on. So: use blank lines when they actually
-      // segment the text, otherwise treat every newline as a break.
-      function splitParagraphs(txt) {
-        const s = txt || "";
-        const byBlank = s.split(/\n{2,}/).map(x => x.trim()).filter(Boolean);
-        const byLine = s.split(/\n+/).map(x => x.trim()).filter(Boolean);
-        const list = byLine.length > byBlank.length * 2 ? byLine : byBlank;
-        return list
-          // a single \n inside a kept block is a wrapped line, not a break
-          .map(x => x.replace(/\s*\n\s*/g, " ").trim())
-          // strip leaked markdown artifacts the translator sometimes emits
-          .map(x => x.replace(/^#{1,6}\s*/, "").trim())
-          .filter(Boolean);
-      }
+      // Paragraph splitting + title-echo stripping live in frontend/lib/text.js
+      // (loaded before this script — see backend/main.py _page()) so the same
+      // logic is exercised by tests/frontend/*.test.mjs instead of a copy that
+      // can silently drift from what's actually shipped.
+      const { splitParagraphs, stripTitleEcho } = window.NyaaText;
 
       const paragraphs = computed(() => {
-        let list = splitParagraphs(displayText.value);
-        // The translator often emits the chapter title as the first line — drop
-        // it when the first block really IS a repeated title, never when prose
-        // merely mentions a short title word. Requires BOTH:
-        //   - the block is title-length (not a paragraph of prose), and
-        //   - it matches exactly, or the title is long enough (>= 12 chars) for
-        //     a prefix test to carry real signal.
-        // The old `first.includes(h1.slice(0, 24))` deleted "The fireplace
-        // crackled as she stepped inside." for a chapter titled "Fire".
-        const h1 = ((DATA.title_translated || DATA.title || "") + "")
-          .replace(/^Chapter\s+\d+[:\s-]*/i, "").trim().toLowerCase();
-        if (h1 && h1.length >= 3 && list.length > 1) {
-          const first = list[0].toLowerCase();
-          const titleLike = first.length <= Math.max(60, h1.length + 20);
-          const strongMatch = first === h1 ||
-            (h1.length >= 12 && (first.startsWith(h1) || h1.startsWith(first)));
-          if (titleLike && strongMatch) list = list.slice(1);
-        }
-        return list;
+        const list = splitParagraphs(displayText.value);
+        return stripTitleEcho(list, DATA.title_translated || DATA.title || "");
       });
 
       // Original text, split by the same rule so the bilingual hover maps
