@@ -34,14 +34,21 @@
             cfg.value.fallback_2_api_key = "";
             cfg.value.auth_password = "";
           }
-        } catch (e) {}
+        } catch (e) {
+          // A failed load showed blank/default fields with no indication
+          // anything was wrong — indistinguishable from "nothing is
+          // configured yet", which for an API key looks like it got wiped.
+          err.value = "Could not load Settings: " + e.message;
+        }
         loadBackups();
       }
       async function loadBackups() {
         try {
           const r = await fetch("/api/backups");
           if (r.ok) backups.value = await r.json();
-        } catch (e) {}
+        } catch (e) {
+          err.value = "Could not load backups: " + e.message;
+        }
       }
       async function deleteBackup(name) {
         if (!confirm(`Delete backup ${name}?`)) return;
