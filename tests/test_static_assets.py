@@ -29,6 +29,29 @@ def test_reader_and_novel_js_reference_the_shared_lib():
         assert "window.NyaaText" in src, "%s must use the shared helpers, not a private copy" % name
 
 
+def test_novel_page_surfaces_the_outcome_for_every_job_kind_not_just_updates():
+    """Every batch kind now ends with a real outcome label, but the progress
+    panel that used to be the only place showing current_label is
+    v-if="batch.running" and unmounts the instant the job ends — that used to
+    make every kind's completion invisible except "updates" (special-cased
+    into the persistent `note` banner). Guards against re-narrowing this back
+    to one kind."""
+    with open(os.path.join(_FRONTEND, "novel.js"), encoding="utf-8") as fh:
+        src = fh.read()
+    assert 'batch.value.kind === "updates"' not in src or "CHANGES_CHAPTERS" in src or "changedChapters" in src, \
+        "the outcome-to-note.value logic must not be narrowed back to the 'updates' kind alone"
+    assert "batch.value.current_label" in src
+
+
+def test_reader_completion_banner_shows_the_real_outcome_not_a_generic_phrase():
+    """The post-completion banner discarded ahead.label (the job's real
+    outcome) in favor of a static "<phase> finished" phrase."""
+    with open(os.path.join(_FRONTEND, "reader.js"), encoding="utf-8") as fh:
+        src = fh.read()
+    assert "ahead.label ||" in src, \
+        "the completion banner must prefer the real outcome label over the generic KIND_LABEL phrase"
+
+
 def test_pages_render(client):
     novel_id = client.post("/api/novels/manual",
                            json={"title": "Smoke Test Novel", "source_url": "manual://smoke-1"}).json()["id"]
