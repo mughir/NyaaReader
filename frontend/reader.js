@@ -136,14 +136,30 @@
         return original.value;
       });
 
-      // Split content into paragraphs (blank-line separated) for proper spacing
-      const paragraphs = computed(() => {
-        let list = (displayText.value || "")
-          .split(/\n{2,}/)
-          .map(s => s.replace(/\s*\n\s*/g, " ").trim())
+      // Split content into paragraphs.
+      //
+      // Two conventions are in play and the reader must survive BOTH: CJK web
+      // novels put one paragraph per LINE (single \n), while a translator may
+      // return blank-line-separated prose. Splitting only on /\n{2,}/ turned a
+      // single-newline chapter into one wall of text -- ~10% of translated
+      // chapters, across several models, since the model's formatting is not
+      // consistent enough to rely on. So: use blank lines when they actually
+      // segment the text, otherwise treat every newline as a break.
+      function splitParagraphs(txt) {
+        const s = txt || "";
+        const byBlank = s.split(/\n{2,}/).map(x => x.trim()).filter(Boolean);
+        const byLine = s.split(/\n+/).map(x => x.trim()).filter(Boolean);
+        const list = byLine.length > byBlank.length * 2 ? byLine : byBlank;
+        return list
+          // a single \n inside a kept block is a wrapped line, not a break
+          .map(x => x.replace(/\s*\n\s*/g, " ").trim())
           // strip leaked markdown artifacts the translator sometimes emits
-          .map(s => s.replace(/^#{1,6}\s*/, "").trim())
+          .map(x => x.replace(/^#{1,6}\s*/, "").trim())
           .filter(Boolean);
+      }
+
+      const paragraphs = computed(() => {
+        let list = splitParagraphs(displayText.value);
         // The translator often emits the chapter title as the first line — drop
         // it when the first block really IS a repeated title, never when prose
         // merely mentions a short title word. Requires BOTH:
@@ -164,14 +180,9 @@
         return list;
       });
 
-      // Original text split into paragraphs (for the 雙語 original block).
-      // Chinese webnovel source uses one line per paragraph (single \n).
-      const originalParas = computed(() => {
-        return (original.value || "")
-          .split(/\n+/)
-          .map(s => s.trim())
-          .filter(Boolean);
-      });
+      // Original text, split by the same rule so the bilingual hover maps
+      // between two lists built the same way.
+      const originalParas = computed(() => splitParagraphs(original.value));
 
       // ---- per-paragraph bilingual alignment (UI 1) ----
       const hoverPara = ref(-1);       // index of translated paragraph being hovered
