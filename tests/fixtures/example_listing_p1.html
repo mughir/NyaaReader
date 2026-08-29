@@ -1,0 +1,58 @@
+<!--
+  Fully invented fixture (not modeled on any real site's markup). Used to
+  exercise scrapers/spec.py's engine generically, decoupled from any
+  site-specific plugin — public plugins live in scrapers/*.py and private
+  ones in a separate, gitignored vault; this suite tests the shared engine
+  they both run on.
+
+  Contains the same structural trap the engine must resolve on a real site: a
+  small "recent chapters" list (descending, partial) beside the full chapter
+  list (ascending, complete). Picking the wrong one either loses chapters or
+  numbers the book backwards.
+-->
+<html>
+<head>
+  <title>Example Book — Chapters</title>
+  <meta property="og:title" content="Example Book">
+  <meta property="og:creator" content="Example Author">
+</head>
+<body>
+  <h1 class="book-title">Example Book</h1>
+  <span class="book-author">Example Author</span>
+  <div id="book-desc">A placeholder synopsis used only to verify selector resolution.</div>
+
+  <ul class="recent">
+    <li><a href="/n/42/ch-20.html">Chapter 20</a></li>
+    <li><a href="/n/42/ch-19.html">Chapter 19</a></li>
+    <li><a href="/n/42/ch-18.html">Chapter 18</a></li>
+  </ul>
+
+  <ul class="chapters">
+    <li><a href="/n/42/ch-1.html">Chapter 1</a></li>
+    <li><a href="/n/42/ch-2.html">Chapter 2</a></li>
+    <li><a href="/n/42/ch-3.html">Chapter 3</a></li>
+    <li><a href="/n/42/ch-4.html">Chapter 4</a></li>
+    <li><a href="/n/42/ch-5.html">Chapter 5</a></li>
+    <li><a href="/n/42/ch-6.html">Chapter 6</a></li>
+    <li><a href="/n/42/ch-7.html">Chapter 7</a></li>
+    <li><a href="/n/42/ch-8.html">Chapter 8</a></li>
+    <li><a href="/n/42/ch-9.html">Chapter 9</a></li>
+    <li><a href="/n/42/ch-10.html">Chapter 10</a></li>
+    <li><a href="/n/42/ch-11.html">Chapter 11</a></li>
+    <li><a href="/n/42/ch-12.html">Chapter 12</a></li>
+    <li><a href="/n/42/ch-13.html">Chapter 13</a></li>
+    <li><a href="/n/42/ch-14.html">Chapter 14</a></li>
+    <li><a href="/n/42/ch-15.html">Chapter 15</a></li>
+    <li><a href="/n/42/ch-16.html">Chapter 16</a></li>
+    <li><a href="/n/42/ch-17.html">Chapter 17</a></li>
+    <li><a href="/n/42/ch-18.html">Chapter 18</a></li>
+    <li><a href="/n/42/ch-19.html">Chapter 19</a></li>
+    <li><a href="/n/42/ch-20.html">Chapter 20</a></li>
+  </ul>
+
+  <div class="pager">
+    <a href="/n/42/chapters">first</a>
+    <a href="/n/42/chapters?page=2">next</a>
+  </div>
+</body>
+</html>
