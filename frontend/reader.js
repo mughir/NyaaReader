@@ -85,7 +85,11 @@
         try {
           await fetch(`/api/novels/${novelId}/batch-stop`, { method: "POST" });
           ahead.value.running = false;  // hide the bar immediately; poll will confirm
-        } catch (e) {}
+        } catch (e) {
+          // The user clicked Stop and got no feedback either way — the bar
+          // stayed up, or vanished while the job kept running server-side.
+          toast("Could not stop: " + e.message, true);
+        }
         stoppingAhead.value = false;
       }
       const tocOpen = ref(false);
@@ -506,7 +510,11 @@
                 gloss.value.terms = parseTermLines(memory.terms);
               }
             }
-          } catch (e) {}
+          } catch (e) {
+            // Silent failure here looked identical to "no glossary yet" —
+            // the panel just opened empty either way.
+            toast("Could not load the glossary: " + e.message, true);
+          }
           memLoading.value = false;
         }
       }
@@ -538,7 +546,10 @@
         try {
           const res = await fetch(`/api/novels/${novelId}/bookmarks`);
           if (res.ok) bmList.value = await res.json();
-        } catch (e) {}
+        } catch (e) {
+          // A failed load looked identical to "no bookmarks yet".
+          toast("Could not load bookmarks: " + e.message, true);
+        }
       }
       function onTextSelect() {
         const sel = window.getSelection();
@@ -603,7 +614,12 @@
             const d = await res.json();
             diaryText.value = d.content || "";
           }
-        } catch (e) {}
+        } catch (e) {
+          // A failed load looked identical to "no diary entry yet" — the box
+          // opened blank either way, risking the user overwriting an entry
+          // that actually exists once they save.
+          toast("Could not load your diary entry: " + e.message, true);
+        }
         diaryLoaded.value = true;
       }
       async function saveDiary() {
@@ -793,7 +809,10 @@
       <button class="btn danger small" @click="stopAhead" :disabled="stoppingAhead">{{ stoppingAhead ? 'Stopping…' : '⏹ Stop' }}</button>
     </div>
     <div v-else-if="!ahead.running && ahead.total > 0 && ahead.kind !== 'translate-ahead'" class="banner" style="opacity:.75">
-      ✓ {{ ahead.kind ? KIND_LABEL[ahead.kind] || ahead.kind : 'Batch' }} finished — ready when you are.
+      <!-- ahead.label is the job's real outcome ("Translated 20/20 chapters",
+           "Stopped by user — 5/20…"); it used to be discarded here in favor
+           of a generic phase phrase that said nothing about what happened. -->
+      ✓ {{ ahead.label || (KIND_LABEL[ahead.kind] || ahead.kind) + ' finished' }} — ready when you are.
     </div>
     <div v-else-if="!ahead.running && ahead.kind === 'translate-ahead' && ahead.total > 0" class="banner" style="opacity:.75">
       ✓ Next chapters translated in the background — they're ready when you are.

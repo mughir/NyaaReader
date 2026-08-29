@@ -368,7 +368,11 @@
                 gloss.value.terms = parseTermLines(memory.value.terms);
               }
             }
-          } catch (e) {}
+          } catch (e) {
+            // Silent failure here looked identical to "no glossary yet" —
+            // the panel just opened empty either way.
+            error.value = "Could not load the glossary: " + e.message;
+          }
           memLoading.value = false;
         }
       }
@@ -524,18 +528,31 @@
             clearInterval(batchTimer); batchTimer = null;
             // when an epub job just finished, reveal the download link
             if (batch.value.kind === "epub" && batch.value.total > 0) epubReady.value = true;
-            // A finished check-updates run reports its outcome in the label
-            // ("Added N new chapter(s)" / "No new chapters" / a read failure).
-            // New chapters only exist in the server-rendered page data, so
-            // reload to actually show them — otherwise a successful update
-            // looked like nothing had happened.
-            if (batch.value.kind === "updates") {
-              const label = batch.value.current_label || "Done";
-              note.value = label;
-              if (/^Added /.test(label)) {
-                note.value = label + " — refreshing…";
-                setTimeout(() => window.location.reload(), 1200);
-              }
+            // Every batch kind now ends with a real outcome label ("Translated
+            // 20/20 chapters", "Stopped by user — 5/20…", "No new chapters"…)
+            // instead of just vanishing — this used to be special-cased for
+            // "updates" only, so every OTHER kind's completion was invisible
+            // once its progress panel disappeared (the panel itself is
+            // v-if="batch.running", so it unmounts the instant the job ends).
+            if (batch.value.kind && batch.value.current_label) {
+              note.value = batch.value.current_label;
+            }
+            // The chapter list below (✓ / EN / ⛁ markers, titles) is part of
+            // the server-rendered page data, so a job that changed it is
+            // invisible until reload — the same reason "updates" already
+            // reloaded. Generalize that to every kind that mutates chapters.
+            // "updates" is special: its own done/total count TRANSLATION
+            // attempts on the up-to-5 newly found chapters, which can be 0
+            // even when chapters WERE added (they just didn't need
+            // translating) — its "Added N" label is the real signal there.
+            const kind = batch.value.kind;
+            const changedChapters = kind === "updates"
+              ? /^Added /.test(batch.value.current_label || "")
+              : ["to-end", "retranslate", "titles", "retry-failed", "retranslate-drift", "match"].includes(kind)
+                && batch.value.done > 0;
+            if (changedChapters) {
+              note.value = (note.value || "Done") + " — refreshing…";
+              setTimeout(() => window.location.reload(), 1200);
             }
           }
         } catch (e) {}

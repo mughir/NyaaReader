@@ -182,9 +182,18 @@ def _auth_enabled_cached() -> bool:
     if _auth_flag_cache["ts"] < now - 5:
         try:
             _auth_flag_cache["value"] = _auth_enabled()
-        except Exception:
-            _auth_flag_cache["value"] = False
-        _auth_flag_cache["ts"] = now
+            _auth_flag_cache["ts"] = now
+        except Exception as e:
+            # FAIL CLOSED, not open. This runs on EVERY request; a transient
+            # DB error must never look like "no password configured" and let
+            # every request through unauthenticated for the next 5s. Keep
+            # whatever was last known-good (or assume auth IS required if we
+            # have never successfully read it), and leave `ts` stale so the
+            # very next request retries immediately instead of caching the
+            # failure.
+            logger.warning(f"auth-enabled check failed, keeping previous state: {e}")
+            if _auth_flag_cache["value"] is None:
+                _auth_flag_cache["value"] = True
     return _auth_flag_cache["value"]
 
 
@@ -515,27 +524,37 @@ def translate_novel_meta_bg(novel_id: int):
             return
         if not _set_batch(novel_id, "meta", 2):
             return
-        try:
-            if _batch_stop_requested(novel_id):
-                return
-            if not novel.title_translated and novel.title:
-                t = translator.translate_short(
-                    novel.title, novel.original_language, novel.target_language)
-                if t and t.strip():
-                    novel.title_translated = t.strip()
-                    _bump_batch(novel_id, label="Novel title")
-                    db.commit()
-            if not novel.description_translated and novel.description:
-                d = translator.translate_short(
-                    novel.description, novel.original_language, novel.target_language)
-                if d and d.strip():
-                    novel.description_translated = d.strip()
-                    _bump_batch(novel_id, label="Synopsis")
-                    db.commit()
-        except Exception as e:
-            logger.warning(f"translate novel meta {novel_id} failed: {e}")
-            db.rollback()
-        _clear_batch(novel_id)
+        # NOTE: this early stop-check used to `return` directly, skipping the
+        # _finish_batch below entirely — the job stayed running=True until the
+        # watchdog freed it ~10 minutes later. Every exit past _set_batch must
+        # go through _finish_batch, so it's a fall-through, not a return.
+        outcome = None
+        if _batch_stop_requested(novel_id):
+            outcome = "Stopped by user"
+        else:
+            try:
+                if not novel.title_translated and novel.title:
+                    t = translator.translate_short(
+                        novel.title, novel.original_language, novel.target_language)
+                    if t and t.strip():
+                        novel.title_translated = t.strip()
+                        _bump_batch(novel_id, label="Novel title")
+                        db.commit()
+                if not novel.description_translated and novel.description:
+                    d = translator.translate_short(
+                        novel.description, novel.original_language, novel.target_language)
+                    if d and d.strip():
+                        novel.description_translated = d.strip()
+                        _bump_batch(novel_id, label="Synopsis")
+                        db.commit()
+            except RelayAuthError as e:
+                logger.error(f"translate-meta stopped: relay key rejected ({e})")
+                outcome = "Stopped — relay key rejected, check Settings"
+            except Exception as e:
+                logger.warning(f"translate novel meta {novel_id} failed: {e}")
+                db.rollback()
+                outcome = f"Translation failed: {str(e)[:120]}"
+        _finish_batch(novel_id, outcome or "Title & synopsis translated")
     finally:
         db.close()
 
@@ -948,9 +967,12 @@ def translate_to_end_bg(novel_id: int):
             return
         if not _set_batch(novel_id, "to-end", len(chapters)):
             return
+        done = 0
+        outcome = None
         for ch in chapters:
             if _batch_stop_requested(novel_id):
                 logger.info(f"translate-to-end stopped by user (novel {novel_id})")
+                outcome = _stopped_label(done, len(chapters), "chapters translated")
                 break
             try:
                 if not ch.original_content:
@@ -964,16 +986,25 @@ def translate_to_end_bg(novel_id: int):
                 if not ch.original_content:
                     raise RuntimeError("fetch failed — no content")
                 _translate_chapter_bg(novel_id, ch.chapter_number, "balanced")
+                # _translate_chapter_bg records ordinary failures on
+                # ch.last_error and returns NORMALLY rather than raising, so
+                # "the call didn't raise" is not "it succeeded" — check the
+                # real outcome, or a batch where every chapter quietly failed
+                # would still report "Translated N/N chapters".
+                db.refresh(ch)
+                if ch.is_translated:
+                    done += 1
                 _bump_batch(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
             except RelayAuthError as e:
                 # Relay key disabled/invalid — stop the batch NOW instead of
                 # failing every remaining chapter.
                 logger.error(f"translate-to-end stopped: relay key rejected ({e})")
+                outcome = _auth_rejected_label(done, len(chapters), "chapters translated")
                 break
             except Exception as e:
                 logger.warning(f"translate-to-end ch{ch.chapter_number} failed: {e}")
                 db.rollback()
-        _clear_batch(novel_id)
+        _finish_batch(novel_id, outcome or f"Translated {done}/{len(chapters)} chapters")
     finally:
         db.close()
 
@@ -1022,17 +1053,29 @@ def retranslate_match_bg(novel_id: int, needle: str):
             return
         if not _set_batch(novel_id, "match", len(chapters)):
             return
+        done = 0
+        outcome = None
         for ch in chapters:
+            # NOTE: this loop had no stop-check at all — clicking "Stop" during
+            # a match-retranslate had no effect until the whole list finished
+            # or a rejected key broke it early. Every other batch loop honors
+            # stop requests; this one must too.
+            if _batch_stop_requested(novel_id):
+                logger.info(f"match-retranslate stopped by user (novel {novel_id})")
+                outcome = _stopped_label(done, len(chapters), "chapters retranslated")
+                break
             try:
                 _translate_chapter(db, ch, quality="balanced", force=True)
+                done += 1
                 _bump_batch(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
             except RelayAuthError as e:
                 logger.error(f"match-retranslate stopped: relay key rejected ({e})")
+                outcome = _auth_rejected_label(done, len(chapters), "chapters retranslated")
                 break
             except Exception as e:
                 logger.warning(f"match-retranslate ch{ch.chapter_number} failed: {e}")
                 db.rollback()
-        _clear_batch(novel_id)
+        _finish_batch(novel_id, outcome or f"Retranslated {done}/{len(chapters)} matching chapters")
     finally:
         db.close()
 
@@ -1149,8 +1192,8 @@ def check_updates_bg(novel_id: int):
                 except Exception as e:
                     logger.warning(f"check-updates translate ch{ch.chapter_number} failed: {e}")
             _finish_batch(novel_id, f"Added {added} new chapter(s)")
-        except Exception:
-            _clear_batch(novel_id)
+        except Exception as e:
+            _finish_batch(novel_id, f"Unexpected error: {str(e)[:120]}")
             raise
     finally:
         db.close()
@@ -1207,7 +1250,12 @@ def _epub_path(novel) -> Path:
 
 
 def _export_epub_bg(novel_id: int):
-    """Background: assemble the EPUB from translated chapters."""
+    """Background: assemble the EPUB from translated chapters.
+
+    No stop-check in the per-chapter loop, unlike the translate batches: this
+    does no relay calls, only local DB reads and in-memory EPUB assembly, so
+    it doesn't share their multi-minute-per-item cost that makes a mid-run
+    stop worth supporting."""
     from ebooklib import epub
     from database import SessionLocal
     db = SessionLocal()
@@ -1221,6 +1269,14 @@ def _export_epub_bg(novel_id: int):
             Chapter.translated_content.isnot(None),
         ).order_by(Chapter.chapter_number).all())
         if not _set_batch(novel_id, "epub", len(chapters)):
+            return
+        if not chapters:
+            # The endpoint queues this unconditionally with no pre-check
+            # (unlike translate-to-end / retranslate, which return "none").
+            # Without reporting an outcome here, clicking "Export EPUB" on a
+            # novel with nothing translated yet showed the spinner and then
+            # simply nothing — no file, no error, no explanation.
+            _finish_batch(novel_id, "No translated chapters to export yet")
             return
 
         book = epub.EpubBook()
@@ -1236,8 +1292,8 @@ def _export_epub_bg(novel_id: int):
         for i, ch in enumerate(chapters):
             title = ch.title_translated or ch.title or f"Chapter {ch.chapter_number}"
             body = ch.translated_content or ""
-            # paragraphs -> <p> blocks (translations split on blank lines)
-            paras = [p.strip() for p in re.split(r"\n{2,}", body) if p.strip()]
+            # paragraphs -> <p> blocks
+            paras = _split_paragraphs(body)
             html_body = "".join(f"<p>{_html_escape(p)}</p>" for p in paras) or "<p></p>"
             item = epub.EpubHtml(
                 title=title,
@@ -1258,17 +1314,36 @@ def _export_epub_bg(novel_id: int):
         book.spine = ["nav"] + book_items
         out = _epub_path(novel)
         epub.write_epub(str(out), book)
-        _clear_batch(novel_id)
+        _finish_batch(novel_id, f"EPUB built — {len(chapters)} chapters")
         logger.info(f"EPUB for novel {novel_id}: {out} ({len(chapters)} chapters)")
     except Exception as e:
         logger.error(f"EPUB export failed for {novel_id}: {e}")
-        _clear_batch(novel_id)
+        _finish_batch(novel_id, f"EPUB build failed: {str(e)[:120]}")
     finally:
         db.close()
 
 
 def _html_escape(s: str) -> str:
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _split_paragraphs(text: str) -> list:
+    """Same rule as frontend/lib/text.js's splitParagraphs (kept in sync
+    manually — no shared runtime between Python and the browser build).
+
+    Two paragraph conventions are in play: CJK source uses one paragraph per
+    LINE (single \\n); a translation may come back blank-line separated
+    instead, and the model's formatting is not consistent enough to rely on
+    one or the other. Splitting only on blank lines (the previous EPUB
+    behavior) rendered a single-newline chapter as one giant <p> — the same
+    bug fixed in the reader, just never ported to the exporter."""
+    text = text or ""
+    by_blank = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+    by_line = [p.strip() for p in re.split(r"\n+", text) if p.strip()]
+    chosen = by_line if len(by_line) > len(by_blank) * 2 else by_blank
+    # a single \n inside a kept block (blank-line mode) is a wrapped line, not
+    # a paragraph break — join it into a space, matching the JS version
+    return [re.sub(r"\s*\n\s*", " ", p).strip() for p in chosen if p.strip()]
 
 
 @app.post("/api/novels/{novel_id}/generate-cover")
@@ -1321,6 +1396,9 @@ async def upload_cover(novel_id: int, file: UploadFile = File(...),
             try:
                 old.unlink()
             except OSError:
+                # Genuinely inconsequential: novel_cover() always serves the
+                # LATEST-mtime file matching this glob, so a stale sibling
+                # that fails to delete is unused dead weight, never served.
                 pass
     novel.cover_url = f"/api/novels/{novel_id}/cover"
     db.commit()
@@ -1477,7 +1555,12 @@ def _locked_terms(db, novel_id: int) -> list:
         return []
     try:
         entries = json.loads(mem.glossary_entries) if isinstance(mem.glossary_entries, str) else mem.glossary_entries
-    except Exception:
+    except Exception as e:
+        # Corrupted glossary_entries silently disables every locked term for
+        # this novel with no indication why — worth a log line since it's the
+        # kind of thing that otherwise looks like the feature just stopped
+        # working.
+        logger.warning(f"_locked_terms: could not parse glossary_entries for novel {novel_id}: {e}")
         return []
     terms = []
     for e in entries or []:
@@ -1519,7 +1602,17 @@ def _retranslate_drift_bg(novel_id: int, chapter_numbers: list):
     try:
         if not _set_batch(novel_id, "retranslate-drift", len(chapter_numbers)):
             return
+        done = 0
+        outcome = None
         for n in chapter_numbers:
+            # NOTE: this loop had neither a stop-check nor a RelayAuthError
+            # shortcut — every other batch loop honors "Stop" and breaks
+            # immediately on a rejected key instead of failing every
+            # remaining chapter one at a time against a dead credential.
+            if _batch_stop_requested(novel_id):
+                logger.info(f"drift retranslate stopped by user (novel {novel_id})")
+                outcome = _stopped_label(done, len(chapter_numbers), "drifted chapters fixed")
+                break
             ch = db.query(Chapter).filter(
                 Chapter.novel_id == novel_id, Chapter.chapter_number == n).first()
             if not ch:
@@ -1528,11 +1621,16 @@ def _retranslate_drift_bg(novel_id: int, chapter_numbers: list):
             try:
                 _translate_chapter(db, ch, "balanced", force=True)
                 db.commit()
+                done += 1
                 _bump_batch(novel_id, label=f"Ch {n} {ch.title_translated or ch.title or ''}")
+            except RelayAuthError as e:
+                logger.error(f"drift retranslate stopped: relay key rejected ({e})")
+                outcome = _auth_rejected_label(done, len(chapter_numbers), "drifted chapters fixed")
+                break
             except Exception as e:
                 logger.warning(f"drift retranslate ch{n}: {e}")
                 db.rollback()
-        _clear_batch(novel_id)
+        _finish_batch(novel_id, outcome or f"Fixed {done}/{len(chapter_numbers)} drifted chapters")
     finally:
         db.close()
 
@@ -1618,9 +1716,12 @@ def translate_titles_bg(novel_id: int):
             return
         if not _set_batch(novel_id, "titles", len(chapters)):
             return
+        done = 0
+        outcome = None
         for ch in chapters:
             if _batch_stop_requested(novel_id):
                 logger.info(f"translate-titles stopped by user (novel {novel_id})")
+                outcome = _stopped_label(done, len(chapters), "titles translated")
                 break
             try:
                 t = translator.translate_short(
@@ -1628,14 +1729,24 @@ def translate_titles_bg(novel_id: int):
                 if t and t.strip() and t.strip() != ch.title.strip():
                     ch.title_translated = t.strip()
                     db.commit()
+                done += 1
                 _bump_batch(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
                 # Small delay between relay calls (short texts, but stay polite)
                 import time as _t
                 _t.sleep(1.5)
+            except RelayAuthError as e:
+                # translate_short's underlying FallbackTranslator shares the
+                # same relay key as every other tier, so a rejected key is
+                # permanent — a bare `except Exception` here previously
+                # swallowed this and looped through every remaining title,
+                # failing each one individually against a dead credential.
+                logger.error(f"translate-titles stopped: relay key rejected ({e})")
+                outcome = _auth_rejected_label(done, len(chapters), "titles translated")
+                break
             except Exception as e:
                 logger.warning(f"title translate ch{ch.chapter_number} failed: {e}")
                 db.rollback()
-        _clear_batch(novel_id)
+        _finish_batch(novel_id, outcome or f"Translated {done}/{len(chapters)} titles")
     finally:
         db.close()
 
@@ -1691,20 +1802,25 @@ def _retranslate_bg(novel_id: int):
         ).order_by(Chapter.chapter_number).all()
         if not _set_batch(novel_id, "retranslate", len(chapters)):
             return
+        done = 0
+        outcome = None
         for ch in chapters:
             if _batch_stop_requested(novel_id):
                 logger.info(f"retranslate stopped by user (novel {novel_id})")
+                outcome = _stopped_label(done, len(chapters), "chapters retranslated")
                 break
             try:
                 _translate_chapter(db, ch, quality="balanced", force=True)
+                done += 1
                 _bump_batch(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
             except RelayAuthError as e:
                 logger.error(f"retranslate stopped: relay key rejected ({e})")
+                outcome = _auth_rejected_label(done, len(chapters), "chapters retranslated")
                 break
             except Exception as e:
                 logger.warning(f"retranslate ch{ch.chapter_number} failed: {e}")
                 db.rollback()
-        _clear_batch(novel_id)
+        _finish_batch(novel_id, outcome or f"Retranslated {done}/{len(chapters)} chapters")
     finally:
         db.close()
 
@@ -2246,6 +2362,21 @@ def _finish_batch(novel_id, label=""):
     _clear_batch(novel_id)
 
 
+# Shared outcome labels for the per-chapter batch loops below. Every one of
+# them used to end with a bare _clear_batch(novel_id) — the job vanished with
+# no record of whether it completed, was stopped, or died against a rejected
+# key, so a batch that failed instantly looked identical to one that finished
+# cleanly. These three helpers are the vocabulary; each _*_bg function builds
+# its own "completed" label (the verb differs — translated/retranslated/
+# retried/built — but stopped/rejected are always phrased the same way).
+def _stopped_label(done: int, total: int, what: str) -> str:
+    return f"Stopped by user — {done}/{total} {what}"
+
+
+def _auth_rejected_label(done: int, total: int, what: str) -> str:
+    return f"Stopped — relay key rejected, check Settings — {done}/{total} {what}"
+
+
 def _clear_batch(novel_id):
     """Mark all running batch jobs for this novel as finished (the bump helper
     may have been split across several rows by a race; leaving any row running
@@ -2389,9 +2520,12 @@ def _retry_failed_bg(novel_id: int):
             return
         if not _set_batch(novel_id, "retry-failed", len(failed)):
             return
+        done = 0
+        outcome = None
         for ch in failed:
             if _batch_stop_requested(novel_id):
                 logger.info(f"retry-failed stopped by user (novel {novel_id})")
+                outcome = _stopped_label(done, len(failed), "chapters retried")
                 break
             try:
                 if not ch.original_content:
@@ -2406,15 +2540,17 @@ def _retry_failed_bg(novel_id: int):
                     db.refresh(ch)
                     if ch.is_translated:
                         ch.last_error = ""
+                        done += 1
                         db.commit()
                 _bump_batch(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
             except RelayAuthError as e:
                 logger.error(f"retry-failed stopped: relay key rejected ({e})")
+                outcome = _auth_rejected_label(done, len(failed), "chapters retried")
                 break
             except Exception as e:
                 logger.warning(f"retry-failed ch{ch.chapter_number}: {e}")
                 db.rollback()
-        _clear_batch(novel_id)
+        _finish_batch(novel_id, outcome or f"Retried {done}/{len(failed)} failed chapters")
     finally:
         db.close()
 
@@ -2478,7 +2614,10 @@ def run_backup(now=None) -> dict:
             src.connection.connection.backup(dst.connection.connection)
         src_engine.dispose(); dst_engine.dispose()
     except Exception as e:
-        # Fallback: plain copy
+        # Fallback: plain copy. Weaker consistency guarantee than the backup
+        # API (a concurrent writer could produce a torn copy) — log so this
+        # degraded path is visible instead of every backup silently using it.
+        logger.warning(f"run_backup: SQLite backup API failed, using plain copy instead: {e}")
         shutil.copy2(db_path, dest)
     # Prune old backups
     keep = _get_config().get("backup_keep", 14)
@@ -2486,8 +2625,8 @@ def run_backup(now=None) -> dict:
     for old in backups[:-keep]:
         try:
             _os.remove(old)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"run_backup: could not remove old backup {old}: {e}")
     return {"status": "ok", "file": fname, "size": _os.path.getsize(dest)}
 
 
@@ -2838,16 +2977,22 @@ async def restore_backup(file: UploadFile):
         finally:
             live.close()
         import os as _os2
-        try: _os2.remove(db_path + ".restored-new")
-        except OSError: pass
+        try:
+            _os2.remove(db_path + ".restored-new")
+        except OSError as e:
+            # Left behind, this is a full DB-sized temp file — silent failures
+            # here accumulate real disk usage across repeated restores.
+            logger.warning(f"restore: could not remove {db_path}.restored-new: {e}")
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Restore failed: {e}")
     finally:
         if _os.path.exists(staging):
-            try: _os.remove(staging)
-            except OSError: pass
+            try:
+                _os.remove(staging)
+            except OSError as e:
+                logger.warning(f"restore: could not remove staging file {staging}: {e}")
     size = _os.path.getsize(db_path)
     # Wipe in-memory batch cache so it doesn't reference now-gone rows, and drop
     # every pooled connection so later requests read the restored file.
@@ -2985,9 +3130,12 @@ def translate_ahead_bg(novel_id: int, after_chapter: int, count: int = 5):
             # fight over the progress counters (that corrupted done>total and
             # left the frontend spinner spinning forever).
             return
+        done = 0
+        outcome = None
         for ch in next_chs:
             if _batch_stop_requested(novel_id):
                 logger.info(f"translate-ahead stopped by user (novel {novel_id}, after ch{ch.chapter_number})")
+                outcome = _stopped_label(done, len(next_chs), "chapters prepared")
                 break
             try:
                 # Fetch original content first if missing
@@ -3003,15 +3151,23 @@ def translate_ahead_bg(novel_id: int, after_chapter: int, count: int = 5):
                 # a long translation if the user already asked to stop.
                 if _batch_stop_requested(novel_id):
                     logger.info(f"translate-ahead stopped mid-fetch (novel {novel_id})")
+                    outcome = _stopped_label(done, len(next_chs), "chapters prepared")
                     break
                 _translate_chapter_bg(novel_id, ch.chapter_number, "balanced")
+                # As in translate_to_end_bg: an ordinary per-chapter failure
+                # is recorded on ch.last_error and returns normally rather
+                # than raising, so check the real outcome before counting it.
+                db.refresh(ch)
+                if ch.is_translated:
+                    done += 1
                 _bump_batch(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
             except RelayAuthError as e:
                 logger.error(f"translate-ahead stopped: relay key rejected ({e})")
+                outcome = _auth_rejected_label(done, len(next_chs), "chapters prepared")
                 break
             except Exception as e:
                 logger.warning(f"translate-ahead ch{ch.chapter_number} failed: {e}")
-        _clear_batch(novel_id)
+        _finish_batch(novel_id, outcome or f"Prepared {done}/{len(next_chs)} chapters ahead")
     finally:
         db.close()
 
@@ -3116,6 +3272,10 @@ async def fetch_chapters_range(novel_id: int, start: int, count: int, do_transla
                 try:
                     await scraper.__aexit__(None, None, None)
                 except Exception:
+                    # Closing an HTTP session that's already done being used
+                    # has no user-visible consequence either way — the batch's
+                    # own per-chapter try/except already reported anything
+                    # that mattered.
                     pass
     finally:
         db.close()
@@ -3136,7 +3296,8 @@ async def novel_review_page(novel_id: int, db: Session = Depends(get_db_session)
         if isinstance(gl, str):
             try:
                 gl = json.loads(gl)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"review page: could not parse glossary_entries for novel {novel_id}: {e}")
                 gl = []
         memory_data = {
             "characters": mem.characters or "",
@@ -3243,7 +3404,11 @@ def _asset_stamp() -> str:
             if os.path.exists(p):
                 h.update(str(os.path.getmtime(p)).encode())
         return h.hexdigest()[:10]
-    except Exception:
+    except Exception as e:
+        # Falling back to a constant stamp silently disables cache-busting —
+        # every page keeps serving whatever a browser already cached, and a
+        # future frontend edit stops reaching anyone. Worth knowing about.
+        logger.warning(f"_asset_stamp: could not hash frontend files, cache-busting disabled: {e}")
         return "0"
 
 
