@@ -23,12 +23,16 @@
           const r = await fetch("/api/config");
           if (r.ok) {
             const d = await r.json();
-            // Keep masked key fragments OUT of the editable fields — they are
-            // display-only. If they leak into the input, a save sends the 4-char
-            // fragment back as the "real key" and clobbers it (the 401 bug).
+            // Keep masked secret fragments OUT of the editable fields — they
+            // are display-only. If one leaks into an input, a save sends the
+            // 4-char fragment back as the "real value" and clobbers it (the 401
+            // bug for keys; a 4-char password + forced logout for auth).
+            // EVERY field masked by GET /api/config must be blanked here.
             cfg.value = { ...cfg.value, ...d };
             cfg.value.gemini_api_key = "";
             cfg.value.fallback_api_key = "";
+            cfg.value.fallback_2_api_key = "";
+            cfg.value.auth_password = "";
           }
         } catch (e) {}
         loadBackups();
