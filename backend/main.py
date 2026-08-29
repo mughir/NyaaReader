@@ -2801,14 +2801,21 @@ async def restore_backup(file: UploadFile):
             while chunk := await file.read(1 << 20):
                 out.write(chunk)
         # Sanity: must be a valid SQLite DB before we destroy the live one.
+        # `probe` must be closed BEFORE removing its own file: on Windows an
+        # open connection blocks deleting the file it points at (WinError 32),
+        # so closing only on the success path left the delete-on-failure below
+        # raising a PermissionError that escaped as an unrelated 500 instead
+        # of the intended 400 "not a valid SQLite database".
         import sqlite3 as _sqlite
+        probe = _sqlite.connect(staging)
         try:
-            probe = _sqlite.connect(staging)
             probe.execute("SELECT count(*) FROM sqlite_master").fetchone()
-            probe.close()
         except Exception:
+            probe.close()
             _os.remove(staging)
             raise HTTPException(status_code=400, detail="Uploaded file is not a valid SQLite database")
+        else:
+            probe.close()
         import sqlite3 as _sqlite2
         import shutil as _shutil
         # Swap the restored file in using SQLite's own backup API against a
@@ -3230,7 +3237,7 @@ def _asset_stamp() -> str:
     """
     try:
         h = hashlib.md5()
-        for name in ("styles.css", "library.js", "novel.js", "reader.js",
+        for name in ("styles.css", "lib/text.js", "library.js", "novel.js", "reader.js",
                      "config.js", "dashboard.js", "review.js", "login.js"):
             p = os.path.join(frontend_path, name)
             if os.path.exists(p):
@@ -3259,6 +3266,7 @@ def _page(title: str, body: str, page_js: Optional[str] = None,
     if page_js:
         js_tags = (
             f'<script src="/static/vendor/vue.global.prod.js?v={stamp}"></script>\n'
+            f'<script src="/static/lib/text.js?v={stamp}"></script>\n'
             f'<script src="/static/{page_js}?v={stamp}"></script>'
         )
     icons_sprite = _icons_sprite_cache

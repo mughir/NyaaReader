@@ -86,13 +86,10 @@
 
       const translatedCount = computed(() => chapters.value.filter(c => c.is_translated).length);
 
-      // Chapter objects arrive in TWO shapes: the server-rendered payload
-      // (window.__NOVEL__, main.py) exposes a boolean `has_content`, while
-      // GET /api/novels/:id/chapters returns the full `original_content`.
-      // Read both, or the list markers and fetch-more silently misbehave.
-      function hasContent(c) {
-        return (c && c.has_content !== undefined) ? !!c.has_content : !!(c && c.original_content);
-      }
+      // Defined in frontend/lib/text.js (loaded before this script — see
+      // backend/main.py _page()), so the same logic is covered by
+      // tests/frontend/*.test.mjs instead of a copy that can drift.
+      const { hasContent } = window.NyaaText;
 
       // Full filtered list (search + status filter)
       const filtered = computed(() => {
