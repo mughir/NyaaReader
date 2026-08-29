@@ -17,6 +17,25 @@
       const backingUp = ref(false);
       const msg = ref("");
       const err = ref("");
+      const relayWarning = ref("");
+
+      async function loadHealthStatus() {
+        // The PROACTIVE check (startup + after every save) already ran server-
+        // side — this just reads its last result, so opening Settings can warn
+        // about a relay/model problem without waiting on a fresh round-trip.
+        try {
+          const r = await fetch("/api/config/health-status");
+          if (!r.ok) return;
+          const h = await r.json();
+          if (!h.checked_at) { relayWarning.value = ""; return; }
+          if (h.key_ok === false) { relayWarning.value = h.message || "Relay is unreachable."; return; }
+          if (h.models && Object.values(h.models).some(v => v === false)) {
+            relayWarning.value = h.message || "A configured model was not found on the relay.";
+            return;
+          }
+          relayWarning.value = "";
+        } catch (e) { /* non-fatal — Settings still works without this */ }
+      }
 
       async function load() {
         try {
@@ -41,6 +60,7 @@
           err.value = "Could not load Settings: " + e.message;
         }
         loadBackups();
+        loadHealthStatus();
       }
       async function loadBackups() {
         try {
@@ -167,7 +187,7 @@
 
       onMounted(load);
 
-      return { cfg, removeAuth, backups, saving, savedFlash, backingUp, msg, err,
+      return { cfg, removeAuth, backups, saving, savedFlash, backingUp, msg, err, relayWarning,
                save, backupNow, loadBackups, deleteBackup, restoreBackup, fmtDate, logout };
     },
     template: `
@@ -188,6 +208,9 @@
   <div class="container container-narrow">
     <div v-if="msg" class="banner">✓ {{ msg }}</div>
     <div v-if="err" class="banner err">⚠ {{ err }}</div>
+    <div v-if="relayWarning" class="banner err" title="Detected automatically — no need to click Save to see this">
+      ⚠ {{ relayWarning }}
+    </div>
 
     <h1 class="page-title"><svg class="ic ic-lg"><use href="#i-settings"/></svg> Settings</h1>
 

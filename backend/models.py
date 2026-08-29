@@ -197,6 +197,11 @@ class BatchJob(Base):
     current_label = Column(String(200), default="")
     running = Column(Boolean, default=True)
     stop_requested = Column(Boolean, default=False)
+    # JSON-encoded per-call args a resumed worker needs but the columns above
+    # don't carry — a needle (match), a chapter list (retranslate-drift), an
+    # after_chapter/count (translate-ahead). "" for kinds that need nothing
+    # beyond novel_id. See _launch_batch()'s docstring in main.py.
+    args_json = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

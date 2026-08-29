@@ -1,14 +1,13 @@
 """
 FastAPI Backend for NyaaReader
 """
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Query, UploadFile, File, Form, Request
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Query, UploadFile, File, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, HttpUrl, computed_field
 from datetime import datetime
-from urllib.parse import quote
 import os
 import re
 import asyncio
@@ -321,6 +320,17 @@ class ChapterResponse(BaseModel):
     class Config:
         from_attributes = True
 
+    @computed_field
+    @property
+    def has_content(self) -> bool:
+        """Same key the server-rendered novel page already embeds per chapter
+        (see novel_page's `ch_data` below) — added here so both payload shapes
+        carry `has_content` instead of only this one carrying the full
+        `original_content` string. frontend/lib/text.js's hasContent() still
+        falls back to checking `original_content` for older cached payloads,
+        but every fresh response now agrees on the same field."""
+        return bool(self.original_content)
+
 
 class ProgressUpdate(BaseModel):
     chapter_id: int
@@ -560,60 +570,15 @@ def translate_novel_meta_bg(novel_id: int):
 
 
 async def fetch_initial_chapters(novel_id: int, auto_translate: bool):
-    """Background task to fetch first 5 chapters"""
-    from database import SessionLocal
-    from translator import get_translator
-    
-    db = SessionLocal()
-    try:
-        novel = db.query(Novel).filter(Novel.id == novel_id).first()
-        if not novel:
-            return
-        
-        chapters = db.query(Chapter).filter(
-            Chapter.novel_id == novel_id,
-            Chapter.chapter_number <= 5
-        ).all()
-        
-        translator = get_translator() if auto_translate else None
-        
-        for chapter in chapters:
-            # 'get_scraper_for_url' already returns a ready instance
-            from scrapers import get_scraper_for_url
-            scraper = get_scraper_for_url(chapter.source_url)
-            if not scraper:
-                continue
+    """Background task to fetch the first 5 chapters, right after a novel is added.
 
-            async with scraper:
-                ch_data = await scraper.get_chapter_content(chapter.source_url)
-                if ch_data and ch_data.content:
-                    chapter.original_content = ch_data.content
-                    chapter.word_count = ch_data.word_count
-                    if translator and auto_translate:
-                        # Run the blocking relay call off the event loop — a single
-                        # chapter can take minutes; inline here it would freeze every
-                        # other request/task while a novel is added.
-                        result = await asyncio.to_thread(
-                            translator.translate_chapter,
-                            ch_data.content,
-                            novel.original_language,
-                            novel.target_language,
-                            "balanced",
-                        )
-                        if result.success:
-                            chapter.translated_content = result.translated_text
-                            chapter.is_translated = True
-                            chapter.translated_word_count = result.output_tokens * 4
-                            chapter.translation_model = result.model_used
-                            chapter.translation_cost = result.estimated_cost
-            # Politeness delay after each fetch (rate-limit protection).
-            # async sleep — this runs on the event loop; time.sleep would
-            # freeze the whole server for 15s per chapter.
-            await asyncio.sleep(FETCH_DELAY_SECONDS)
-
-            db.commit()
-    finally:
-        db.close()
+    Delegates to fetch_chapters_range instead of hand-rolling its own loop — that
+    used to open/close a fresh scraper session per chapter (instead of one shared
+    session for the whole batch) and had no try/except around the fetch itself, so
+    a single transient failure on e.g. chapter 2 raised straight past the loop and
+    silently left chapters 3-5 unfetched, with no error, no log, no BatchJob outcome
+    — nothing to tell the user their new novel came in half-populated."""
+    await fetch_chapters_range(novel_id, start=1, count=5, do_translate=auto_translate)
 
 
 @app.get("/api/novels", response_model=List[NovelResponse])
@@ -1051,7 +1016,7 @@ def retranslate_match_bg(novel_id: int, needle: str):
         ).order_by(Chapter.chapter_number).all()
         if not chapters:
             return
-        if not _set_batch(novel_id, "match", len(chapters)):
+        if not _set_batch(novel_id, "match", len(chapters), args={"needle": needle}):
             return
         done = 0
         outcome = None
@@ -1600,7 +1565,8 @@ def _retranslate_drift_bg(novel_id: int, chapter_numbers: list):
     from database import SessionLocal
     db = SessionLocal()
     try:
-        if not _set_batch(novel_id, "retranslate-drift", len(chapter_numbers)):
+        if not _set_batch(novel_id, "retranslate-drift", len(chapter_numbers),
+                         args={"chapter_numbers": chapter_numbers}):
             return
         done = 0
         outcome = None
@@ -2208,10 +2174,14 @@ def _update_job(job_id, **fields):
         db.close()
 
 
-def _set_batch(novel_id, kind, total, label=""):
+def _set_batch(novel_id, kind, total, label="", args=None):
     """Start (or resume) a batch job. Returns True if THIS call owns the run
     (i.e. no other running job exists for this novel), False if a duplicate
     would start — callers should skip work when False.
+
+    `args` (a JSON-serializable dict) is persisted on the row for kinds that
+    need per-call arguments a restart wouldn't otherwise have — see
+    _launch_batch(). Kinds that need nothing beyond novel_id can omit it.
 
     NOTE: only ONE batch job per novel may run at a time (any kind). The
     bump/clear helpers address the most-recent running row, so concurrent
@@ -2219,6 +2189,7 @@ def _set_batch(novel_id, kind, total, label=""):
     (e.g. translate-ahead done > total → frontend spinner never stops)."""
     from database import SessionLocal
     from models import BatchJob
+    args_json = json.dumps(args) if args is not None else ""
     db = SessionLocal()
     try:
         # Any running job of this novel (any kind) → refuse to start another.
@@ -2236,12 +2207,13 @@ def _set_batch(novel_id, kind, total, label=""):
             existing.total = total
             existing.done = 0
             existing.current_label = label
+            existing.args_json = args_json
             db.commit()
             db.refresh(existing)
             job_id = existing.id
         else:
             job = BatchJob(novel_id=novel_id, kind=kind, total=total, done=0,
-                           current_label=label, running=True)
+                           current_label=label, running=True, args_json=args_json)
             db.add(job)
             db.commit()
             db.refresh(job)
@@ -2446,20 +2418,21 @@ def _resume_interrupted_jobs():
 
     Whether a kind CAN be resumed is decided in one place: _launch_batch()
     returns False for kinds that need per-call args the BatchJob row doesn't
-    carry (a needle, an after_chapter, a chapter list)."""
+    carry (a needle, an after_chapter, a chapter list) and doesn't have a
+    usable args_json to reconstruct them from."""
     from database import SessionLocal
     from models import BatchJob
     db = SessionLocal()
     try:
         stale = db.query(BatchJob).filter(BatchJob.running == True).all()
-        pending = [(j.novel_id, j.kind) for j in stale]
+        pending = [(j.novel_id, j.kind, j.args_json or "") for j in stale]
         for job in stale:
             job.running = False
         db.commit()
     finally:
         db.close()
-    for novel_id, kind in pending:
-        if _launch_batch(novel_id, kind):
+    for novel_id, kind, args_json in pending:
+        if _launch_batch(novel_id, kind, args_json):
             logger.info(f"Resuming interrupted {kind} job for novel {novel_id}")
         else:
             logger.info(f"Not resuming {kind} for novel {novel_id} (needs per-call args) — marked finished")
@@ -2555,17 +2528,29 @@ def _retry_failed_bg(novel_id: int):
         db.close()
 
 
-def _launch_batch(novel_id, kind) -> bool:
+def _launch_batch(novel_id, kind, args_json="") -> bool:
     """Launch the background function for a job kind (used by restart resume).
 
-    Returns True if a worker was started. A kind ABSENT from this map cannot be
-    auto-resumed because it needs per-call arguments the BatchJob row does not
-    carry: translate-ahead (after_chapter — the reader refires it), match (the
-    needle), retranslate-drift (the chapter list). This map is the single
-    source of truth for resumability — _resume_interrupted_jobs asks it rather
-    than keeping a second list that can drift out of sync (that drift is how
-    "meta" jobs ended up neither resumed nor cleared)."""
+    Returns True if a worker was started. Most kinds need nothing beyond
+    novel_id. Three need a per-call argument the other BatchJob columns don't
+    carry — translate-ahead (after_chapter/count), match (the needle),
+    retranslate-drift (the chapter list) — which _set_batch() now persists as
+    JSON on the row precisely so a restart can reconstruct the call instead of
+    just cleaning up after it. `args_json` is that persisted value; if it's
+    missing or doesn't carry what the kind needs (an old row from before this
+    existed, or a genuinely malformed one), the kind is NOT resumed — silently
+    guessing at a needle or chapter list would be worse than dropping the job.
+    This map is the single source of truth for resumability —
+    _resume_interrupted_jobs asks it rather than keeping a second list that
+    can drift out of sync (that drift is how "meta" jobs ended up neither
+    resumed nor cleared)."""
     import threading
+    args = {}
+    if args_json:
+        try:
+            args = json.loads(args_json)
+        except Exception:
+            args = {}
     targets = {
         "to-end": lambda: translate_to_end_bg(novel_id),
         "retranslate": lambda: _retranslate_bg(novel_id),
@@ -2575,6 +2560,19 @@ def _launch_batch(novel_id, kind) -> bool:
         "epub": lambda: _export_epub_bg(novel_id),
         "meta": lambda: translate_novel_meta_bg(novel_id),
     }
+    if kind == "match":
+        needle = args.get("needle")
+        if needle:
+            targets["match"] = lambda: retranslate_match_bg(novel_id, needle)
+    elif kind == "retranslate-drift":
+        chapter_numbers = args.get("chapter_numbers")
+        if chapter_numbers:
+            targets["retranslate-drift"] = lambda: _retranslate_drift_bg(novel_id, chapter_numbers)
+    elif kind == "translate-ahead":
+        after_chapter = args.get("after_chapter")
+        if after_chapter is not None:
+            count = args.get("count", 5)
+            targets["translate-ahead"] = lambda: translate_ahead_bg(novel_id, after_chapter, count)
     fn = targets.get(kind)
     if fn is None:
         return False
@@ -2723,7 +2721,8 @@ async def get_config():
 
 
 @app.put("/api/config")
-async def put_config(payload: dict, db: Session = Depends(get_db_session)):
+async def put_config(payload: dict, background_tasks: BackgroundTasks = None,
+                     db: Session = Depends(get_db_session)):
     """Update config: only non-empty values replace; empty strings keep the old value
     (so a masked field doesn't wipe a key). To clear a key, send "__clear": true."""
     from models import AppConfig
@@ -2772,6 +2771,12 @@ async def put_config(payload: dict, db: Session = Depends(get_db_session)):
     # Pass `cleared` so a key the user just wiped is also removed from
     # os.environ — otherwise the revoked credential stays live until restart.
     _apply_config_to_env(cleared)
+    # Refresh the cached health status too — the frontend's own pre-save check
+    # already validated THIS payload, but a save can also come from anywhere
+    # that skips that check, and this keeps /api/config/health-status honest
+    # without making the save itself wait on a relay round-trip.
+    if background_tasks is not None:
+        background_tasks.add_task(_check_relay_health_bg)
     return {"status": "ok"}
 
 
@@ -2793,6 +2798,15 @@ async def config_health_check(payload: dict = None):
     return p
 
 
+@app.get("/api/config/health-status")
+async def config_health_status():
+    """Last PROACTIVE relay/model health check — run automatically on startup
+    and after every config save (see _check_relay_health_bg), not triggered by
+    this request. {} until the first one has run. Lets the Settings page warn
+    about a bad model without the user having to click Save to find out."""
+    return _relay_health_cache or {"checked_at": None}
+
+
 def _config_health_check_sync(p: dict) -> dict:
     """Blocking implementation of the config health check (call via to_thread)."""
     import os as _os
@@ -2801,8 +2815,15 @@ def _config_health_check_sync(p: dict) -> dict:
     # Test primary relay
     key = (p.get("api_key") or _os.getenv("FALLBACK_API_KEY", "")).strip()
     base = (p.get("base_url") or _os.getenv("FALLBACK_BASE_URL", "https://opencode.ai/zen/go/v1")).strip().rstrip("/")
-    model1 = (p.get("model") or "").strip()
-    model2 = (p.get("model_2") or "").strip()
+    # Fall back to env ONLY when the caller omits the key entirely — a caller
+    # that explicitly sends "" (Settings' own save-time check, when the user
+    # cleared the field on purpose) must still test that literal blank, not a
+    # stale env value. The proactive startup/post-save check calls this with
+    # p={} to test whatever is ACTUALLY configured; without this fallback it
+    # silently checked "" for both, which `valid()` below always accepts,
+    # making the model check a no-op for that caller.
+    model1 = (p["model"] if "model" in p else _os.getenv("FALLBACK_MODEL", "")).strip()
+    model2 = (p["model_2"] if "model_2" in p else _os.getenv("FALLBACK_MODEL_2", "")).strip()
     
     key_ok = True
     available = []
@@ -2843,8 +2864,8 @@ def _config_health_check_sync(p: dict) -> dict:
     
     fallback2_result = {}
     if m2_base and m2_key and m2_base != base:
-        # Test Model 2's separate relay
-        m2_model = (p.get("model_2") or "").strip()
+        # Test Model 2's separate relay (same value as `model2` above)
+        m2_model = model2
         available2 = []
         url2 = f"{m2_base}/models"
         try:
@@ -3068,6 +3089,39 @@ async def _startup_reliability():
 def _startup_reliability_sync():
     _apply_config_to_env()
     _resume_interrupted_jobs()
+    _check_relay_health_bg()
+
+
+# Cache of the last background relay/model health check — {} until the first
+# one runs. Exposed via GET /api/config/health-status so the Settings page can
+# show a warning without the user having to click "Save" to discover a model
+# the relay silently deprecated out from under an already-saved config.
+_relay_health_cache: dict = {}
+
+
+def _check_relay_health_bg():
+    """Run the same check config_health_check does, against whatever config is
+    ACTUALLY effective right now (env-sourced, since payload={}) — proactively,
+    instead of only when a user happens to open Settings and click Save. Called
+    on startup and after every config save, so drift (a model renamed/retired on
+    the relay's side, or a bad value that reached os.environ some other way than
+    the Settings save-time check) surfaces on its own instead of silently
+    breaking every translation until someone notices and investigates."""
+    from datetime import datetime as _dt
+    try:
+        result = _config_health_check_sync({})
+    except Exception as e:
+        logger.warning(f"relay health check itself failed: {e}")
+        return
+    result["checked_at"] = _dt.utcnow().isoformat()
+    _relay_health_cache.clear()
+    _relay_health_cache.update(result)
+    if not result.get("key_ok"):
+        logger.warning(f"relay health check: {result.get('message')}")
+    elif not all(result.get("models", {}).values()):
+        logger.warning(f"relay health check: {result.get('message')}")
+    else:
+        logger.info("relay health check: OK")
 
 
 def _fetch_chapter_content_sync(source_url: str, polite_delay: bool = True):
@@ -3125,7 +3179,8 @@ def translate_ahead_bg(novel_id: int, after_chapter: int, count: int = 5):
         if not taken:
             return
         next_chs = taken
-        if not _set_batch(novel_id, "translate-ahead", len(next_chs)):
+        if not _set_batch(novel_id, "translate-ahead", len(next_chs),
+                         args={"after_chapter": after_chapter, "count": count}):
             # Another batch job (any kind) already owns this novel — don't
             # fight over the progress counters (that corrupted done>total and
             # left the frontend spinner spinning forever).
@@ -3514,21 +3569,10 @@ async def library_page(request: Request, db: Session = Depends(get_db_session)):
                  data_js=f"window.__LIBRARY__ = {_json(data)}; window.__SHELF__ = {_json(shelf)};")
 
 
-@app.post("/add")
-async def add_novel_page(
-    source_url: str = Form(...),
-    target_language: str = Form("en"),
-    background_tasks: BackgroundTasks = None,
-    db: Session = Depends(get_db_session),
-):
-    """Plain-HTML form handler wrapping the same scrape+create logic."""
-    try:
-        novel = await _create_novel_from_url(
-            db, source_url.strip(), target_language, True, background_tasks,
-        )
-        return RedirectResponse(f"/novel/{novel.id}", status_code=303)
-    except ValueError as e:
-        return RedirectResponse(f"/?error={quote(str(e))}", status_code=303)
+# The legacy POST-and-redirect "add a novel" HTML-form handler that used to
+# live here was removed: unreachable from the current Vue UI (library.js's
+# add-novel form uses @submit.prevent and calls POST /api/novels instead), and
+# it's the same shared _create_novel_from_url() either way.
 
 
 @app.get("/novel/{novel_id}", response_class=HTMLResponse)
@@ -3637,24 +3681,10 @@ async def chapter_page(novel_id: int, chapter_number: int, db: Session = Depends
                  data_js=f"window.__READER__ = {_json(reader_data)};")
 
 
-@app.post("/novel/{novel_id}/chapter/{chapter_number}/translate")
-async def translate_chapter_page(
-    novel_id: int,
-    chapter_number: int,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db_session),
-):
-    """Start translating a chapter in the background, then show a progress page."""
-    chapter = db.query(Chapter).filter(
-        Chapter.novel_id == novel_id,
-        Chapter.chapter_number == chapter_number,
-    ).first()
-    if chapter and chapter.original_content and not chapter.is_translated:
-        background_tasks.add_task(_translate_chapter_bg, novel_id, chapter_number, "balanced")
-        return RedirectResponse(
-            f"/novel/{novel_id}/chapter/{chapter_number}?translating=1", status_code=303
-        )
-    return RedirectResponse(f"/novel/{novel_id}/chapter/{chapter_number}", status_code=303)
+# The legacy POST-and-redirect "translate a chapter" HTML-form handler that
+# used to live here was removed: unreachable from the current Vue UI (a
+# repo-wide grep found no caller), superseded by the JSON API's own POST
+# /api/novels/{novel_id}/chapters/{chapter_number}/translate below.
 
 
 @app.post("/api/novels/{novel_id}/chapters/{chapter_number}/translate")
@@ -3756,51 +3786,17 @@ def _translate_chapter_bg(novel_id: int, chapter_number: int, quality: str = "ba
         db.close()
 
 
-@app.post("/novel/{novel_id}/chapter/{chapter_number}/fetch")
-async def fetch_chapter_page(novel_id: int, chapter_number: int, db: Session = Depends(get_db_session)):
-    """Fetch one chapter's content synchronously, then redirect back."""
-    chapter = db.query(Chapter).filter(
-        Chapter.novel_id == novel_id,
-        Chapter.chapter_number == chapter_number,
-    ).first()
-    if chapter and not chapter.original_content:
-        from scrapers import get_scraper_for_url
-        scraper = get_scraper_for_url(chapter.source_url)
-        if scraper:
-            async with scraper:
-                ch_data = await scraper.get_chapter_content(chapter.source_url)
-                if ch_data and ch_data.content:
-                    chapter.original_content = ch_data.content
-                    chapter.word_count = ch_data.word_count
-                    db.commit()
-    return RedirectResponse(f"/novel/{novel_id}/chapter/{chapter_number}", status_code=303)
-
-
-@app.post("/novel/{novel_id}/fetch-more")
-async def fetch_more_page(novel_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db_session)):
-    """Fetch the next batch of unfetched chapters in the background."""
-    novel = db.query(Novel).filter(Novel.id == novel_id).first()
-    if novel:
-        next_num = db.query(Chapter).filter(
-            Chapter.novel_id == novel_id,
-            Chapter.original_content.is_(None),
-        ).order_by(Chapter.chapter_number).first()
-        start = next_num.chapter_number if next_num else (db.query(Chapter).filter(Chapter.novel_id == novel_id).count() + 1)
-        background_tasks.add_task(fetch_chapters_range, novel_id, start, 10, False)
-    return RedirectResponse(f"/novel/{novel_id}", status_code=303)
-
-
-@app.post("/novel/{novel_id}/delete")
-async def delete_novel_page(novel_id: int, db: Session = Depends(get_db_session)):
-    novel = db.query(Novel).filter(Novel.id == novel_id).first()
-    if novel:
-        db.query(Chapter).filter(Chapter.novel_id == novel_id).delete()
-        db.query(NovelSettings).filter(NovelSettings.novel_id == novel_id).delete()
-        db.query(NovelMemory).filter(NovelMemory.novel_id == novel_id).delete()
-        db.query(ReadingProgress).filter(ReadingProgress.novel_id == novel_id).delete()
-        db.delete(novel)
-        db.commit()
-    return RedirectResponse("/", status_code=303)
+# Note: the legacy plain-HTML-form handlers that used to live here (fetch one
+# chapter, fetch the next batch, delete a novel — all POST-and-redirect, no
+# JSON) were removed. The app has been Vue-driven since the multi-page
+# rewrite; every page's own <form> uses @submit.prevent and calls the JSON
+# API instead (frontend/library.js, login.js). A repo-wide grep found zero
+# references to any of these paths outside their own route definitions, and
+# they had drifted out of sync with their JSON-API equivalents: this one, for
+# instance, bulk-deleted 4 tables directly (bypassing the ORM's own cascade
+# relationships on Novel) and still missed bookmarks/diary_entries/batch_jobs
+# — duplicate, unreachable, and already wrong is not something to "fix", it's
+# something to delete. See DELETE /api/novels/{novel_id} for the real path.
 
 
 if __name__ == "__main__":
