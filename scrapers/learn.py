@@ -237,7 +237,12 @@ SPEC_FIELDS = ("chapter_links", "content", "chapter_title", "chapter_number_re",
 def build_scraper(spec: dict, **kwargs) -> SiteScraper:
     """Turn a spec dict into a live, ordinary SiteScraper."""
     attrs = {"name": "learned", "source_site": spec.get("source_site") or "",
-             "domains": [], "paginate": _paginate_from(spec.get("paginate"))}
+             "domains": [], "paginate": _paginate_from(spec.get("paginate")),
+             # This module already runs validate_listing/validate_content on
+             # every spec it spawns (that's the point of this file) -- don't
+             # have SiteScraper duplicate the exact same check on the exact
+             # same page a second time.
+             "self_check": False}
     for f in SPEC_FIELDS:
         if spec.get(f) not in (None, "", [], {}):
             attrs[f] = spec[f]
