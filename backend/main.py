@@ -411,6 +411,10 @@ async def add_chapter_manual(novel_id: int, chapter_data: ChapterManualCreate,
         is_translated=False,
     )
     db.add(chapter)
+    # SessionLocal uses autoflush=False, so the pending db.add()s above are
+    # NOT visible to this count yet — flush first or total_chapters is set to
+    # the PRE-insert number and drifts permanently behind the real count.
+    db.flush()
     novel.total_chapters = db.query(Chapter).filter(Chapter.novel_id == novel_id).count()
     db.commit()
     db.refresh(chapter)
@@ -505,9 +509,12 @@ def translate_novel_meta_bg(novel_id: int):
             return
         if novel.title_translated and novel.description_translated:
             return
+        translator = get_translator()
+        if translator is None:
+            logger.error(f"translate-meta aborted (novel {novel_id}): no API key configured (set FALLBACK_API_KEY in Settings)")
+            return
         if not _set_batch(novel_id, "meta", 2):
             return
-        translator = get_translator()
         try:
             if _batch_stop_requested(novel_id):
                 return
@@ -987,7 +994,7 @@ async def retranslate_match(novel_id: int, payload: dict = None,
     matched = db.query(Chapter).filter(
         Chapter.novel_id == novel_id,
         Chapter.is_translated == True,
-        Chapter.translated_content.contains(needle),
+        Chapter.translated_content.contains(needle, autoescape=True),
     ).count()
     if matched == 0:
         return {"status": "none", "pending": 0}
@@ -1009,7 +1016,7 @@ def retranslate_match_bg(novel_id: int, needle: str):
         chapters = db.query(Chapter).filter(
             Chapter.novel_id == novel_id,
             Chapter.is_translated == True,
-            Chapter.translated_content.contains(needle),
+            Chapter.translated_content.contains(needle, autoescape=True),
         ).order_by(Chapter.chapter_number).all()
         if not chapters:
             return
@@ -1046,7 +1053,12 @@ async def check_updates(novel_id: int, background_tasks: BackgroundTasks = None,
 
 
 def check_updates_bg(novel_id: int):
-    """Refresh the chapter list from the source; fetch+translate any new chapters."""
+    """Refresh the chapter list from the source; fetch+translate any new chapters.
+
+    Claims the batch slot for the WHOLE operation (scrape included) so the UI can
+    show what happened. Every exit path sets a label and clears the job —
+    previously each failure was a bare `return`, so a broken scraper looked
+    exactly like "no new chapters" and the user was told it had checked fine."""
     from database import SessionLocal
     db = SessionLocal()
     try:
@@ -1058,61 +1070,88 @@ def check_updates_bg(novel_id: int):
         if not scraper:
             logger.warning(f"check-updates: no scraper for {novel.source_url}")
             return
+        if not _set_batch(novel_id, "updates", 1, label="Checking the source for new chapters…"):
+            logger.info(f"check-updates novel {novel_id}: another batch owns this novel — skipped")
+            return
+        try:
+            # Full chapter list from the source (novel info carries the dir listing)
+            info = _get_novel_info_sync(scraper, novel.source_url)
+            if not info or not info.chapters:
+                logger.warning(
+                    f"check-updates novel {novel_id}: could not read a chapter list from "
+                    f"{novel.source_url} — scraper returned "
+                    f"{'nothing' if not info else '0 chapters'}")
+                _finish_batch(novel_id, "Could not read the source chapter list")
+                return
+            chapters = info.chapters
+            last_known = db.query(Chapter).filter(Chapter.novel_id == novel_id).order_by(
+                Chapter.chapter_number.desc()).first()
+            known = set(c.source_url for c in db.query(Chapter).filter(
+                Chapter.novel_id == novel_id).all())
+            new_entries = [c for c in chapters if c.url not in known]
+            if not new_entries:
+                logger.info(f"check-updates novel {novel_id}: no new chapters "
+                            f"({len(chapters)} on source, {len(known)} known)")
+                _finish_batch(novel_id, "No new chapters")
+                return
 
-        # Full chapter list from the source (novel info carries the dir listing)
-        info = _get_novel_info_sync(scraper, novel.source_url)
-        if not info or not info.chapters:
-            return
-        chapters = info.chapters
-        last_known = db.query(Chapter).filter(Chapter.novel_id == novel_id).order_by(
-            Chapter.chapter_number.desc()).first()
-        known = set(c.source_url for c in db.query(Chapter).filter(
-            Chapter.novel_id == novel_id).all())
-        new_entries = [c for c in chapters if c.url not in known]
-        if not new_entries:
-            logger.info(f"check-updates novel {novel_id}: no new chapters")
-            return
+            # Append new chapters (numbered after the last known)
+            start_num = (last_known.chapter_number + 1) if last_known else 1
+            added = 0
+            for i, entry in enumerate(new_entries):
+                num = start_num + i
+                ch = Chapter(
+                    novel_id=novel_id,
+                    chapter_number=num,
+                    title=entry.title or f"Chapter {num}",
+                    source_url=entry.url,
+                    is_translated=False,
+                )
+                db.add(ch)
+                added += 1
+            # autoflush=False: flush the new chapters before counting them, or
+            # total_chapters is written as the PRE-insert number (516 instead of
+            # 540) and the reader's "Ch N/total" + next-chapter nav go stale.
+            db.flush()
+            novel.total_chapters = db.query(Chapter).filter(Chapter.novel_id == novel_id).count()
+            db.commit()
+            logger.info(f"check-updates novel {novel_id}: added {added} new chapters "
+                        f"({start_num}..{start_num + added - 1})")
 
-        # Append new chapters (numbered after the last known)
-        start_num = (last_known.chapter_number + 1) if last_known else 1
-        added = 0
-        for i, entry in enumerate(new_entries):
-            num = start_num + i
-            ch = Chapter(
-                novel_id=novel_id,
-                chapter_number=num,
-                title=entry.title or f"Chapter {num}",
-                source_url=entry.url,
-                is_translated=False,
-            )
-            db.add(ch)
-            added += 1
-        novel.total_chapters = db.query(Chapter).filter(Chapter.novel_id == novel_id).count()
-        db.commit()
-        logger.info(f"check-updates novel {novel_id}: added {added} new chapters")
-        # Translate the first few new chapters (translate-ahead handles the rest while reading)
-        if not _set_batch(novel_id, "updates", added):
-            return
-        for ch in db.query(Chapter).filter(
-                Chapter.novel_id == novel_id, Chapter.is_translated == False
-        ).order_by(Chapter.chapter_number).limit(min(added, 5)).all():
-            try:
-                if not ch.original_content:
-                    ch_data = _fetch_chapter_content_sync(ch.source_url)
-                    if ch_data and ch_data.content:
-                        ch.original_content = ch_data.content
-                        ch.word_count = getattr(ch_data, "word_count", None)
-                        db.commit()
-                db.refresh(ch)
-                if ch.original_content:
-                    _translate_chapter_bg(novel_id, ch.chapter_number, "balanced")
-                _bump_batch(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
-            except RelayAuthError as e:
-                logger.error(f"check-updates translate stopped: relay key rejected ({e})")
-                break
-            except Exception as e:
-                logger.warning(f"check-updates translate ch{ch.chapter_number} failed: {e}")
-        _clear_batch(novel_id)
+            # Translate the first few NEW chapters (translate-ahead handles the rest
+            # while reading). Scope this to chapter_number >= start_num: an unscoped
+            # "first 5 untranslated" query picks the LOWEST-numbered untranslated
+            # chapters in the whole novel, so on a part-translated novel this
+            # translated e.g. ch 37-41 instead of the ones just discovered.
+            todo = (db.query(Chapter)
+                    .filter(Chapter.novel_id == novel_id,
+                            Chapter.chapter_number >= start_num,
+                            Chapter.is_translated == False)
+                    .order_by(Chapter.chapter_number)
+                    .limit(5).all())
+            _set_batch_total(novel_id, len(todo) or 1,
+                             label=f"Added {added} new chapter(s)")
+            for ch in todo:
+                try:
+                    if not ch.original_content:
+                        ch_data = _fetch_chapter_content_sync(ch.source_url)
+                        if ch_data and ch_data.content:
+                            ch.original_content = ch_data.content
+                            ch.word_count = getattr(ch_data, "word_count", 0) or 0
+                            db.commit()
+                    db.refresh(ch)
+                    if ch.original_content:
+                        _translate_chapter_bg(novel_id, ch.chapter_number, "balanced")
+                    _bump_batch(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+                except RelayAuthError as e:
+                    logger.error(f"check-updates translate stopped: relay key rejected ({e})")
+                    break
+                except Exception as e:
+                    logger.warning(f"check-updates translate ch{ch.chapter_number} failed: {e}")
+            _finish_batch(novel_id, f"Added {added} new chapter(s)")
+        except Exception:
+            _clear_batch(novel_id)
+            raise
     finally:
         db.close()
 
@@ -1571,6 +1610,12 @@ def translate_titles_bg(novel_id: int):
         if not chapters:
             return
         translator = get_translator()
+        if translator is None:
+            # Same guard _translate_chapter() has. Without it every chapter
+            # raised AttributeError on None, was swallowed by the per-chapter
+            # except, and the job reported "complete" with nothing translated.
+            logger.error(f"translate-titles aborted (novel {novel_id}): no API key configured (set FALLBACK_API_KEY in Settings)")
+            return
         if not _set_batch(novel_id, "titles", len(chapters)):
             return
         for ch in chapters:
@@ -1742,10 +1787,9 @@ async def search_novel(novel_id: int, payload: dict, db: Session = Depends(get_d
     novel = db.query(Novel).filter(Novel.id == novel_id).first()
     if not novel:
         raise HTTPException(status_code=404, detail="Novel not found")
-    needle = f"%{q}%"
     chapters = (db.query(Chapter)
                 .filter(Chapter.novel_id == novel_id,
-                        Chapter.translated_content.contains(q))
+                        Chapter.translated_content.contains(q, autoescape=True))
                 .order_by(Chapter.chapter_number)
                 .limit(30).all())
     results = []
@@ -1754,6 +1798,8 @@ async def search_novel(novel_id: int, payload: dict, db: Session = Depends(get_d
         idx = text.lower().find(q.lower())
         if idx < 0:
             idx = text.find(q)
+        if idx < 0:
+            idx = 0   # SQL matched but Python didn't (case folding) — show the head
         start = max(0, idx - 80)
         end = min(len(text), idx + len(q) + 160)
         snippet = ("…" if start > 0 else "") + text[start:end] + ("…" if end < len(text) else "")
@@ -2167,6 +2213,39 @@ def _bump_batch(novel_id, label="", done_inc=1):
         db.close()
 
 
+def _set_batch_total(novel_id, total, label=""):
+    """Adjust a running job's total once the worker knows the real size (a job
+    that has to scrape before it can count starts at a placeholder)."""
+    from database import SessionLocal
+    from models import BatchJob
+    db = SessionLocal()
+    try:
+        job = db.query(BatchJob).filter(
+            BatchJob.novel_id == novel_id, BatchJob.running == True).order_by(
+            BatchJob.id.desc()).first()
+        if job:
+            job.total = total
+            if label:
+                job.current_label = label
+            db.commit()
+            b = _batch_cache.get(novel_id)
+            if b:
+                b["total"] = total
+                if label:
+                    b["current_label"] = label
+    finally:
+        db.close()
+
+
+def _finish_batch(novel_id, label=""):
+    """Record an outcome label, then close the job. Lets a job report WHY it
+    ended ("No new chapters", "Could not read the source chapter list")
+    instead of vanishing and looking identical to a success."""
+    if label:
+        _bump_batch(novel_id, label=label, done_inc=0)
+    _clear_batch(novel_id)
+
+
 def _clear_batch(novel_id):
     """Mark all running batch jobs for this novel as finished (the bump helper
     may have been split across several rows by a race; leaving any row running
@@ -2227,26 +2306,32 @@ async def batch_status(novel_id: int):
 def _resume_interrupted_jobs():
     """On startup: find jobs still marked running (killed by a restart) and relaunch them.
     The bg functions are idempotent — they skip already-done chapters, so resuming is safe.
-    NOTE: no fresh-window check here — after a restart the old process is definitely dead,
-    so ANY running row is stale and must be relaunched (or the job never resumes)."""
+    After a restart the old process is definitely dead, so EVERY running row is
+    stale. Each row is therefore marked finished BEFORE anything is relaunched:
+    the resumed worker's first act is _set_batch(), which refuses to start while
+    a running row still looks fresh (updated_at < JOB_STALL_MINUTES). Leaving
+    the row running silently dropped the job on any restart that happened within
+    10 minutes of the last progress bump — and blocked new batches meanwhile.
+
+    Whether a kind CAN be resumed is decided in one place: _launch_batch()
+    returns False for kinds that need per-call args the BatchJob row doesn't
+    carry (a needle, an after_chapter, a chapter list)."""
     from database import SessionLocal
     from models import BatchJob
     db = SessionLocal()
     try:
         stale = db.query(BatchJob).filter(BatchJob.running == True).all()
+        pending = [(j.novel_id, j.kind) for j in stale]
         for job in stale:
-            # Kinds that can't auto-resume (need per-call args) must NOT stay
-            # "running" — that would block all new batches for the novel until
-            # the watchdog stall-frees them 10 minutes later.
-            if job.kind in ("translate-ahead", "match", "retranslate-drift"):
-                logger.info(f"Not resuming {job.kind} for novel {job.novel_id} (needs args) — marking finished")
-                job.running = False
-                continue
-            logger.info(f"Resuming interrupted {job.kind} job for novel {job.novel_id}")
-            _launch_batch(job.novel_id, job.kind)
+            job.running = False
         db.commit()
     finally:
         db.close()
+    for novel_id, kind in pending:
+        if _launch_batch(novel_id, kind):
+            logger.info(f"Resuming interrupted {kind} job for novel {novel_id}")
+        else:
+            logger.info(f"Not resuming {kind} for novel {novel_id} (needs per-call args) — marked finished")
 
 
 JOB_STALL_MINUTES = 10  # no bump for this long = the worker is hung or died silently
@@ -2334,25 +2419,32 @@ def _retry_failed_bg(novel_id: int):
         db.close()
 
 
-def _launch_batch(novel_id, kind):
-    """Launch the right background function for a job kind (used by resume)."""
+def _launch_batch(novel_id, kind) -> bool:
+    """Launch the background function for a job kind (used by restart resume).
+
+    Returns True if a worker was started. A kind ABSENT from this map cannot be
+    auto-resumed because it needs per-call arguments the BatchJob row does not
+    carry: translate-ahead (after_chapter — the reader refires it), match (the
+    needle), retranslate-drift (the chapter list). This map is the single
+    source of truth for resumability — _resume_interrupted_jobs asks it rather
+    than keeping a second list that can drift out of sync (that drift is how
+    "meta" jobs ended up neither resumed nor cleared)."""
     import threading
     targets = {
-        "translate-ahead": lambda: None,   # needs after_chapter; skip auto-resume (reader refires)
         "to-end": lambda: translate_to_end_bg(novel_id),
         "retranslate": lambda: _retranslate_bg(novel_id),
         "titles": lambda: translate_titles_bg(novel_id),
-        "match": lambda: None,             # needs needle; cannot auto-resume
         "updates": lambda: check_updates_bg(novel_id),
         "retry-failed": lambda: _retry_failed_bg(novel_id),
         "epub": lambda: _export_epub_bg(novel_id),
-        "retranslate-drift": lambda: None,  # needs chapter list; reader refires
+        "meta": lambda: translate_novel_meta_bg(novel_id),
     }
     fn = targets.get(kind)
     if fn is None:
-        return
+        return False
     t = threading.Thread(target=fn, daemon=True)
     t.start()
+    return True
 
 
 # ============================ BACKUPS (feature 2) ============================
@@ -2434,24 +2526,39 @@ def _get_config():
         db.close()
 
 
-def _apply_config_to_env():
+# config field -> environment variable that actually powers the translator
+_CONFIG_ENV = (
+    ("gemini_api_key", "GEMINI_API_KEY"),
+    ("fallback_api_key", "FALLBACK_API_KEY"),
+    ("fallback_base_url", "FALLBACK_BASE_URL"),
+    ("fallback_model", "FALLBACK_MODEL"),
+    ("fallback_model_2", "FALLBACK_MODEL_2"),
+    ("fallback_2_base_url", "FALLBACK_2_BASE_URL"),
+    ("fallback_2_api_key", "FALLBACK_2_API_KEY"),
+)
+
+
+def _apply_config_to_env(cleared=None):
     """Push DB config into os.environ so get_translator() picks it up, and reset
-    the translator singleton so the next call rebuilds with the new keys."""
+    the translator singleton so the next call rebuilds with the new keys.
+
+    `cleared` names the config fields the caller just BLANKED; their env vars are
+    removed. Without this, clearing or rotating a key in Settings left the old
+    (possibly revoked) credential live in os.environ until the process
+    restarted, and the translator kept using it.
+
+    A field that is merely empty is deliberately left alone: a key supplied only
+    via .env and never saved in Settings must keep working (this is why
+    _get_config()/get_config() also fall back to the environment).
+    """
     cfg = _get_config()
-    if cfg.get("gemini_api_key"):
-        os.environ["GEMINI_API_KEY"] = cfg["gemini_api_key"]
-    if cfg.get("fallback_api_key"):
-        os.environ["FALLBACK_API_KEY"] = cfg["fallback_api_key"]
-    if cfg.get("fallback_base_url"):
-        os.environ["FALLBACK_BASE_URL"] = cfg["fallback_base_url"]
-    if cfg.get("fallback_model"):
-        os.environ["FALLBACK_MODEL"] = cfg["fallback_model"]
-    if cfg.get("fallback_model_2"):
-        os.environ["FALLBACK_MODEL_2"] = cfg["fallback_model_2"]
-    if cfg.get("fallback_2_base_url"):
-        os.environ["FALLBACK_2_BASE_URL"] = cfg["fallback_2_base_url"]
-    if cfg.get("fallback_2_api_key"):
-        os.environ["FALLBACK_2_API_KEY"] = cfg["fallback_2_api_key"]
+    cleared = set(cleared or ())
+    for field, env_name in _CONFIG_ENV:
+        val = (cfg.get(field) or "").strip()
+        if val:
+            os.environ[env_name] = val
+        elif field in cleared:
+            os.environ.pop(env_name, None)
     import translator as _tr
     _tr._translator_instance = None
 
@@ -2489,23 +2596,27 @@ async def put_config(payload: dict, db: Session = Depends(get_db_session)):
               "fallback_model", "fallback_model_2", "auth_password",
               "fallback_2_base_url", "fallback_2_api_key"]
     password_changed = False
+    cleared = set()
     for f in fields:
         if f in payload or payload.get(f + "__clear"):
             v = (payload.get(f) or "").strip()
             if payload.get(f + "__clear"):
                 if f == "auth_password":
                     password_changed = True
+                cleared.add(f)
                 setattr(cfg, f, "")
             elif v and v != getattr(cfg, f):
                 if f == "auth_password":
                     password_changed = True
                 # Guard against the masked-fragment clobber: the config page
-                # shows only the last 4 chars; if that fragment comes back as a
-                # "new key" (short, and equal to the tail of the stored one),
-                # keep the real key instead of overwriting it with garbage.
-                if f.endswith("_api_key") and len(v) < 8:
+                # shows only the last 4 chars of every secret; if that fragment
+                # comes back as a "new value" (short, and equal to the tail of
+                # the stored one), keep the real secret instead of overwriting
+                # it with garbage. auth_password is included deliberately — a
+                # truncated password locks the user out of their own library.
+                if (f.endswith("_api_key") or f == "auth_password") and len(v) < 8:
                     stored = getattr(cfg, f) or ""
-                    if stored.endswith(v):
+                    if stored and stored.endswith(v):
                         continue  # masked fragment echo — ignore
                 setattr(cfg, f, v)
     if "backup_enabled" in payload:
@@ -2519,7 +2630,9 @@ async def put_config(payload: dict, db: Session = Depends(get_db_session)):
     # issued session token is revoked (a stolen cookie can't keep working).
     if password_changed:
         _rotate_session_secret()
-    _apply_config_to_env()
+    # Pass `cleared` so a key the user just wiped is also removed from
+    # os.environ — otherwise the revoked credential stays live until restart.
+    _apply_config_to_env(cleared)
     return {"status": "ok"}
 
 
@@ -2703,16 +2816,20 @@ async def restore_backup(file: UploadFile):
         # DB while pooled connections hold it open (and WAL sidecars exist)
         # can tear the database or resurrect stale WAL pages.
         _shutil.copy2(staging, db_path + ".restored-new")
-        dst = _sqlite2.connect(db_path)
+        # DIRECTION MATTERS: sqlite3's Connection.backup(target) copies SELF
+        # INTO target. The restored snapshot is the SOURCE and the live DB is
+        # the TARGET — reversing these silently copies the live DB over the
+        # upload and reports success while restoring nothing.
+        live = _sqlite2.connect(db_path)
         try:
-            dst.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            src_conn = _sqlite2.connect(db_path + ".restored-new")
+            live.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            restored = _sqlite2.connect(db_path + ".restored-new")
             try:
-                dst.backup(src_conn)
+                restored.backup(live)
             finally:
-                src_conn.close()
+                restored.close()
         finally:
-            dst.close()
+            live.close()
         import os as _os2
         try: _os2.remove(db_path + ".restored-new")
         except OSError: pass
@@ -2725,8 +2842,14 @@ async def restore_backup(file: UploadFile):
             try: _os.remove(staging)
             except OSError: pass
     size = _os.path.getsize(db_path)
-    # Wipe in-memory batch cache so it doesn't reference now-gone rows.
+    # Wipe in-memory batch cache so it doesn't reference now-gone rows, and drop
+    # every pooled connection so later requests read the restored file.
     _batch_cache.clear()
+    try:
+        from database import engine as _engine
+        _engine.dispose()
+    except Exception as e:
+        logger.warning(f"could not dispose engine after restore: {e}")
     return {"status": "ok", "size": size, "message": "Restored — reload the page"}
 
 

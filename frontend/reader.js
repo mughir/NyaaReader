@@ -144,15 +144,22 @@
           // strip leaked markdown artifacts the translator sometimes emits
           .map(s => s.replace(/^#{1,6}\s*/, "").trim())
           .filter(Boolean);
-        // The translator often emits the chapter title as the first line —
-        // drop it when it duplicates the page heading (or just starts with it).
+        // The translator often emits the chapter title as the first line — drop
+        // it when the first block really IS a repeated title, never when prose
+        // merely mentions a short title word. Requires BOTH:
+        //   - the block is title-length (not a paragraph of prose), and
+        //   - it matches exactly, or the title is long enough (>= 12 chars) for
+        //     a prefix test to carry real signal.
+        // The old `first.includes(h1.slice(0, 24))` deleted "The fireplace
+        // crackled as she stepped inside." for a chapter titled "Fire".
         const h1 = ((DATA.title_translated || DATA.title || "") + "")
           .replace(/^Chapter\s+\d+[:\s-]*/i, "").trim().toLowerCase();
-        if (h1 && list.length > 1) {
+        if (h1 && h1.length >= 3 && list.length > 1) {
           const first = list[0].toLowerCase();
-          if (first === h1 || first.includes(h1.slice(0, 24)) || h1.includes(first)) {
-            list = list.slice(1);
-          }
+          const titleLike = first.length <= Math.max(60, h1.length + 20);
+          const strongMatch = first === h1 ||
+            (h1.length >= 12 && (first.startsWith(h1) || h1.startsWith(first)));
+          if (titleLike && strongMatch) list = list.slice(1);
         }
         return list;
       });
@@ -674,6 +681,7 @@
         titles: "Translating titles…",
         match: "Re-translating matches…",
         updates: "Checking for new chapters…",
+        meta: "Translating title & synopsis…",
         "retry-failed": "Retrying failed chapters…",
         epub: "Building EPUB…",
         "retranslate-drift": "Fixing glossary drift…",

@@ -86,6 +86,14 @@
 
       const translatedCount = computed(() => chapters.value.filter(c => c.is_translated).length);
 
+      // Chapter objects arrive in TWO shapes: the server-rendered payload
+      // (window.__NOVEL__, main.py) exposes a boolean `has_content`, while
+      // GET /api/novels/:id/chapters returns the full `original_content`.
+      // Read both, or the list markers and fetch-more silently misbehave.
+      function hasContent(c) {
+        return (c && c.has_content !== undefined) ? !!c.has_content : !!(c && c.original_content);
+      }
+
       // Full filtered list (search + status filter)
       const filtered = computed(() => {
         let list = chapters.value;
@@ -303,7 +311,7 @@
         if (fetching.value) return;
         fetching.value = true; error.value = "";
         try {
-          const firstMissing = chapters.value.find(c => !c.original_content);
+          const firstMissing = chapters.value.find(c => !hasContent(c));
           const start = firstMissing ? firstMissing.chapter_number : (chapters.value.length + 1);
           const res = await fetch(`/api/novels/${novel.value.id}/fetch-chapters?start=${start}&count=10&translate=true`, { method: "POST" });
           if (!res.ok) throw new Error("fetch-more failed");
@@ -323,9 +331,10 @@
           const res = await fetch(`/api/novels/${novel.value.id}/chapters`);
           if (!res.ok) continue;
           const list = await res.json();
-          const changed = list.some(c => (c.original_content || "") !== (chapters.value.find(x => x.id === c.id) || {}).original_content);
+          const prev = chapters.value;
+          const changed = list.some(c => hasContent(c) !== hasContent(prev.find(x => x.id === c.id)));
           chapters.value = list;
-          if (changed || list.every(c => c.original_content)) { note.value = ""; return; }
+          if (changed || list.every(c => hasContent(c))) { note.value = ""; return; }
         }
         note.value = "Still fetching — refresh manually if needed.";
       }
@@ -461,7 +470,15 @@
         try {
           const res = await fetch(`/api/novels/${novel.value.id}/check-updates`, { method: "POST" });
           if (!res.ok) throw new Error("check failed");
-          note.value = "Checked the source for new chapters — any new ones are fetched & translated in the background.";
+          // Report what actually happened. This used to print "Checked the
+          // source…" for EVERY 200, including already_running — so a check that
+          // never ran looked identical to one that did.
+          const d = await res.json();
+          if (d.status === "already_running") {
+            note.value = "Another background job is running for this novel — check for updates again once it finishes.";
+          } else {
+            note.value = "Checking the source for new chapters…";
+          }
         } catch (e) {
           error.value = e.message;
         } finally {
@@ -510,6 +527,19 @@
             clearInterval(batchTimer); batchTimer = null;
             // when an epub job just finished, reveal the download link
             if (batch.value.kind === "epub" && batch.value.total > 0) epubReady.value = true;
+            // A finished check-updates run reports its outcome in the label
+            // ("Added N new chapter(s)" / "No new chapters" / a read failure).
+            // New chapters only exist in the server-rendered page data, so
+            // reload to actually show them — otherwise a successful update
+            // looked like nothing had happened.
+            if (batch.value.kind === "updates") {
+              const label = batch.value.current_label || "Done";
+              note.value = label;
+              if (/^Added /.test(label)) {
+                note.value = label + " — refreshing…";
+                setTimeout(() => window.location.reload(), 1200);
+              }
+            }
           }
         } catch (e) {}
       }
@@ -548,7 +578,7 @@
         } catch (e) { /* quiet — the visible button covers this case */ }
       }
 
-      return { novel, chapters, q, filter, fetching, deleting, error, note,
+      return { novel, chapters, q, filter, fetching, deleting, error, note, hasContent,
                translatedCount, visible, filtered, fetchMore, deleteNovel, ensureMetaTranslated,
                searchMode, contentResults, contentSearching, contentSearched,
                searchContent, setSearchMode,
@@ -789,7 +819,7 @@
           <span v-else>{{ c.title || ('Chapter ' + c.chapter_number) }}</span>
         </span>
         <span v-if="c.is_translated" class="st done" title="Translated">✓</span>
-        <span v-else-if="c.original_content" class="st fetched" title="Fetched, not translated">EN</span>
+        <span v-else-if="hasContent(c)" class="st fetched" title="Fetched, not translated">EN</span>
         <span v-else class="st missing" title="Not fetched yet">⛁</span>      </a>
     </div>
     <div v-else class="empty-state">
