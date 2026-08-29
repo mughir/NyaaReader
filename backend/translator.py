@@ -161,9 +161,12 @@ TRANSLATION RULES:
 2. Preserve honorifics (-san, -kun, -chan, -sama, -nim, -ssi, xiānsheng, xiǎojiě, etc.) unless they sound unnatural in English
 3. Translate cultivation terms, technique names, and fantasy terminology consistently
 4. Keep sound effects (SFX) if they add atmosphere, or translate them in brackets
-4. Maintain paragraph breaks and dialogue formatting
-5. DO NOT add explanations, notes, or meta-commentary
-6. Output ONLY the translated text
+5. PARAGRAPH FORMAT: put ONE BLANK LINE between every paragraph, including
+   between separate lines of dialogue. The source often uses a single line
+   break per paragraph; your output must use a blank line instead. Never run
+   several paragraphs together into one block.
+6. DO NOT add explanations, notes, or meta-commentary
+7. Output ONLY the translated text
 
 TRANSLATE NOW:"""
         
