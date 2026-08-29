@@ -179,6 +179,17 @@ class SiteScraper(BaseScraper):
     domains: List[str] = []          # empty => inert, discovery skips it
     language = "zh"
 
+    # Hand-written plugins get a lightweight self-check (learn.validate_listing
+    # / validate_content) after every real fetch, so a site redesign that
+    # silently breaks their FIXED selectors shows up as a log warning instead
+    # of just quietly returning empty or wrong content forever -- previously
+    # only learned/inferred specs had this safety net, since ai.py runs the
+    # same validators itself as part of deciding whether to trust a spec.
+    # learn.build_scraper() sets this False on the scrapers IT spawns, so
+    # those don't get validated twice (once there, once here) for the same
+    # fetch.
+    self_check: bool = True
+
     # --- locating pages -----------------------------------------------------
     # Optional regex with ONE group, matched against the URL PATH, yielding a
     # novel id for the templates below. Lets a plugin accept any URL on the site
@@ -305,6 +316,14 @@ class SiteScraper(BaseScraper):
             logger.warning("%s: could not fetch %s" % (type(self).__name__, index_url))
             return None
 
+        if self.self_check and listing_soup is not None:
+            from scrapers import learn
+            ok, why, _ = learn.validate_listing(self, listing_soup, listing_url)
+            if not ok:
+                logger.warning("%s: chapter list selector may be stale for %s (%s) -- "
+                               "a site redesign could have broken this plugin"
+                               % (type(self).__name__, listing_url, why))
+
         pairs = await self.collect_chapter_links(listing_url, listing_soup)
         chapters = [
             ChapterData(number=i, title=t or ("Chapter %d" % i), content="", url=u, word_count=0)
@@ -371,6 +390,13 @@ class SiteScraper(BaseScraper):
             soup = await self._soup(current)
             if soup is None:
                 break
+            if current == url and self.self_check:
+                from scrapers import learn
+                ok, why, _ = learn.validate_content(self, soup)
+                if not ok:
+                    logger.warning("%s: content selector may be stale for %s (%s) -- "
+                                   "a site redesign could have broken this plugin"
+                                   % (type(self).__name__, url, why))
             if not title:
                 title = pick(soup, self.chapter_title) or ""
             node = self._body_node(soup)

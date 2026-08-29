@@ -285,10 +285,10 @@ class AIScraper(BaseScraper):
     # --------------------------------------------- tier 3: text extraction
     async def _llm_novel_info(self, url: str, soup) -> Optional[NovelInfo]:
         soup = _strip_boilerplate(soup)
-        text = _visible_text(soup)
-        if len(text) < 200:
+        full = _visible_text(soup, limit=0)
+        if len(full) < 200:
             logger.warning("AIScraper: page too short to extract (%d chars) -- may be JS-rendered"
-                           % len(text))
+                           % len(full))
 
         # Real chapter links, found STRUCTURALLY (the largest cluster of
         # same-shaped hrefs). The old keyword regex -- chapter|/ch/|/read/ --
@@ -304,23 +304,60 @@ class AIScraper(BaseScraper):
                     seen.add(absolute)
                     real_links.append((a.get_text(strip=True), absolute))
 
-        prompt = (
-            "You are a web-novel site extractor. Below is the visible text of a novel "
-            "listing page fetched from %s. Extract a JSON object with EXACTLY this shape:\n"
-            '{"title": string, "author": string|null, "description": string, '
-            '"chapters": [{"title": string, "url": string}]}\n'
-            "Rules:\n"
-            "- chapters: include EVERY chapter link you can find, in reading order; "
-            "title WITHOUT the chapter number prefix; url as an ABSOLUTE url.\n"
-            '- If this is not a novel page, return {"title":"", "chapters":[]}.\n'
-            "- description: the synopsis/blurb, or empty string.\n"
-            "- Output ONLY the JSON object, no prose, no markdown fences.\n\n"
-            "BASE URL: %s\nPAGE TEXT:\n%s" % (url, url, text)
-        )
-        data = await self._extract(prompt)
+        # A long listing page's visible text -- one line per chapter -- can
+        # easily dwarf MAX_TEXT_CHARS; truncating it here silently hid every
+        # chapter past the cutoff from the model, the same bug _llm_chapter's
+        # chunking already fixed for chapter bodies. real_links (above) reads
+        # the untruncated DOM directly so it isn't affected, but when a site's
+        # markup doesn't cluster into real_links at all, this text was the
+        # ONLY source of chapters -- so it has to be chunked too.
+        chunks = _chunk_for_extraction(full, MAX_TEXT_CHARS)
+        if len(chunks) > MAX_EXTRACT_PASSES:
+            logger.warning("AIScraper: listing page at %s is %d chars -- extracting only the "
+                           "first %d of %d passes (cost cap)"
+                           % (url, len(full), MAX_EXTRACT_PASSES, len(chunks)))
+            chunks = chunks[:MAX_EXTRACT_PASSES]
+        elif len(chunks) > 1:
+            logger.info("AIScraper: listing page is %d chars -- extracting in %d passes"
+                        % (len(full), len(chunks)))
+
+        data = None
+        llm_chapters = []
+        seen_keys = set()
+        for i, chunk in enumerate(chunks or [""]):
+            part_note = (
+                "" if len(chunks) <= 1 else
+                " (part %d/%d of a long listing page -- some chapters may be in other parts)"
+                % (i + 1, len(chunks))
+            )
+            prompt = (
+                "You are a web-novel site extractor. Below is the visible text of a novel "
+                "listing page fetched from %s%s. Extract a JSON object with EXACTLY this shape:\n"
+                '{"title": string, "author": string|null, "description": string, '
+                '"chapters": [{"title": string, "url": string}]}\n'
+                "Rules:\n"
+                "- chapters: include EVERY chapter link you can find in THIS part, in reading "
+                "order; title WITHOUT the chapter number prefix; url as an ABSOLUTE url.\n"
+                '- If this is not a novel page, return {"title":"", "chapters":[]}.\n'
+                "- description: the synopsis/blurb, or empty string.\n"
+                "- Output ONLY the JSON object, no prose, no markdown fences.\n\n"
+                "BASE URL: %s\nPAGE TEXT:\n%s" % (url, part_note, url, chunk)
+            )
+            part_data = await self._extract(prompt)
+            if not part_data:
+                continue
+            if data is None:
+                data = part_data   # title/author/description come from the first usable pass
+            for ch in part_data.get("chapters", []) or []:
+                ch_url = str(ch.get("url", "")).strip()
+                key = ch_url or ("%d:%s" % (i, ch.get("title", "")))
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                llm_chapters.append(ch)
+
         if not data or not data.get("title"):
             return None
-        llm_chapters = data.get("chapters", []) or []
 
         chapters = []
         # Trust the structurally-found links over the model's URLs: models
@@ -354,7 +391,7 @@ class AIScraper(BaseScraper):
             author=(data.get("author") or None),
             description=(data.get("description") or "").strip(),
             chapters=chapters,
-            original_language=self._detect_language(lang_sample or text),
+            original_language=self._detect_language(lang_sample or full),
             total_chapters=len(chapters),
         )
 
