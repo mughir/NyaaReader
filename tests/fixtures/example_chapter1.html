@@ -1,0 +1,32 @@
+<!--
+  Fully invented fixture, original filler text only. Exercises: the content
+  selector, junk removal, a site-notice removal rule, a PREFACE node sharing
+  the body's class (must not win over the real body), and the "next part"
+  link a multi-part merge follows.
+-->
+<html><body>
+  <h1 class="chapter-heading">Chapter One (Part 1/2)</h1>
+
+  <div class="chapter-text preface">
+    A short preface paragraph, placeholder only.
+  </div>
+
+  <div id="main-body" class="chapter-text">
+    <script>var junk = 1;</script>
+    <ins class="ad-banner">advertisement placeholder</ins>
+    <p>This is placeholder body text written only to exercise the content
+    extraction pipeline. It has no connection to any real published work and
+    exists purely to give the extraction rules something non-trivial to
+    process, including a reasonable amount of length for word-count checks.</p>
+    <p>A second placeholder paragraph, continuing to pad the body so the
+    length comfortably clears the minimum content threshold used during
+    validation.</p>
+    <span class="notice">NOTICE: this placeholder text is for automated testing only.</span>
+  </div>
+
+  <div class="chapter-text afterword">
+    A short afterword paragraph, placeholder only.
+  </div>
+
+  <a class="next-part" href="/n/42/ch-1-part2.html">Continue reading</a>
+</body></html>

@@ -13,6 +13,7 @@ const SHELL = [
   "/static/favicon.ico",
   "/static/icons.svg",
   "/static/vendor/vue.global.prod.js",
+  "/static/lib/text.js",
   "/static/library.js",
   "/static/novel.js",
   "/static/reader.js",
