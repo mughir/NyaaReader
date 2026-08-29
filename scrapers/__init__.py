@@ -40,7 +40,7 @@ def _discover_plugins() -> dict:
     plugins = {}
     for mod_info in pkgutil.iter_modules(pkg.__path__):
         mod_name = mod_info.name
-        if mod_name in ("base", "ai", "__init__"):
+        if mod_name in ("base", "ai", "spec", "__init__"):
             continue
         if mod_name.startswith("_test_"):
             continue  # dev-only tests (run live network on import) — never load on startup

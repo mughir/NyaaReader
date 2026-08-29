@@ -10,7 +10,8 @@ NyaaReader is a cozy, self-hosted reader for Japanese / Chinese / Korean web nov
 
 ## ✨ What Nyaa can do
 
-- 📖 **Multi-site scraping (plugin system)** — site-specific plugins (JJWXC, Qidian, 17K, Kakuyomu, AlphaPolis, Novelpia, Munpia, Naver, Ridibooks, and a few private ones) plus **`AIScraper`**, an LLM-powered generic fallback that extracts novels/chapters from *any* site without a plugin (using the same relay chain that translates). To add a site: copy `scrapers/example_plugin.py`, implement two methods, register your domain — done. Remove it to fall back to AI extraction. (Your private site plugins live in a separate private vault and are overlaid here at build time by `combine.py`.)
+- 📖 **Multi-site scraping (declarative plugin system)** — a site plugin is a *spec*, not a scraper: you declare selectors (chapter list, pagination rule, metadata, body, junk) and the engine in `scrapers/spec.py` does the fetching, **chapter-list pagination**, de-duplication, numbering and text extraction. To add a site: copy `scrapers/example_plugin.py`, set `domains`, fill in the selectors — done. Remove it to fall back to AI extraction. (Your private site plugins live in a separate private vault and are overlaid here at build time by `combine.py`.)
+- 🤖 **Self-configuring for unknown sites** — no plugin? `AIScraper` sends the LLM a *structural digest* of the page, **validates** the selectors it proposes against that same page, and caches them as a spec in `data/site_specs/<domain>.json`. Every later fetch runs the deterministic engine with **zero LLM calls**; if the site is redesigned the spec stops validating and is re-inferred once.
 - 🌐 **AI translation, one key** — `deepseek-v4-flash` (best value) → `gpt-5.6-luna` (quality), both on a **single** relay key. The quality tier kicks in only when the fast one fails. (Blind-benchmarked 10 models for score vs. cost before wiring.)
 - 🧠 **Per-novel AI memory** — Nyaa remembers characters, terms, and plot across chapters, with **auto-compaction** so a 500+ chapter novel stays consistent without runaway cost.
 - 🔒 **Editable glossary with locks** — keep names consistent (fix that one character you can't stand being retranslated differently). Locked entries are fed to the translator as **mandatory**.
@@ -46,7 +47,7 @@ NyaaReader is a cozy, self-hosted reader for Japanese / Chinese / Korean web nov
 
 3. **Open:** http://localhost:8080 🐱
 
-4. **Add a novel:** paste any novel page URL — the AI scraper handles unknown sites automatically (LLM extraction; the first 5 chapters auto-fetch + translate in the background). Site-specific plugins for e.g. syosetu-style sites can be dropped into `scrapers/` (see `scrapers/example_plugin.py`).
+4. **Add a novel:** paste any novel page URL — unknown sites are configured automatically (the LLM infers selectors once, they're validated and cached, then everything runs deterministically; the first 5 chapters auto-fetch + translate in the background). Site-specific plugins can be dropped into `scrapers/` (see `scrapers/example_plugin.py`).
 
 ---
 
@@ -85,8 +86,10 @@ NyaaReader/
 │   ├── styles.css      # Themes & typography
 │   └── vendor/         # Vendored Vue 3 (no CDN dependency)
 ├── scrapers/           # Plugin registry + site plugins (private_*.py NOT tracked here)
-│   ├── ai.py           # AIScraper — LLM fallback for sites without a plugin
-│   ├── example_plugin.py  # Template for writing your own site plugin
+│   ├── spec.py         # Declarative plugin engine (fetch, paginate, extract)
+│   ├── learn.py        # Digest -> LLM-inferred spec -> validate -> cache
+│   ├── ai.py           # AIScraper — learned spec, else inference, else LLM text
+│   ├── example_plugin.py  # Template: declare selectors, not code
 │   └── chinese.py / japanese.py / korean.py  # site plugins
 ├── combine.py          # Overlays your private plugins from the private vault at build time
 ├── LICENSE             # MIT — attribution required (credit this repo)

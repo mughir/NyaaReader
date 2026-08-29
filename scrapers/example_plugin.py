@@ -1,131 +1,119 @@
 """
-EXAMPLE PLUGIN — a site-specific scraper template (no real site).
+EXAMPLE PLUGIN — a site spec template (no real site).
 
-HOW TO BUILD YOUR OWN (the whole workflow):
+HOW TO ADD A SITE (the whole workflow):
   1. Copy this file -> scrapers/<anything>.py
-  2. Rename the class (e.g. MySiteScraper)
+  2. Rename the class
   3. Set `domains` to your site's real domain(s)   <-- THIS activates it
-  4. Fill in the two methods with real selectors
+  4. Fill in the selectors below
 
-No registry edits, no other files touched. The registry auto-discovers
-every BaseScraper subclass in scrapers/*.py and reads its `domains`.
+No registry edits, no other files touched. The registry auto-discovers every
+BaseScraper subclass in scrapers/*.py and reads its `domains`.
 
 ACTIVATION:
   ACTIVE   = file exists in scrapers/  AND  `domains` is non-empty.
-             Until then this plugin is INERT — it is skipped by discovery
-             and can never run or error, so the app works out of the box.
+             Until then the plugin is INERT — discovery skips it, so it can
+             never run or error, and the app works out of the box.
   DEACTIVE = delete the file (or empty `domains`). That domain falls back
              to AIScraper.
 
-You only need to implement TWO async methods; `BaseScraper` gives you
-fetching, retries, rate-limiting and HTML parsing for free.
+You do NOT write fetching, pagination, de-duplication, numbering, retries or
+word counting: the engine in scrapers/spec.py owns all of it. You only declare
+WHERE things are. That split is deliberate — when every plugin hand-rolled its
+own listing loop, two of three forgot to paginate the chapter list and silently
+capped at one page (ncode.syosetu.com stored 100 of ~700 chapters).
+
+SELECTOR MINI-LANGUAGE (used by every field):
+    "css"                    -> that element's text
+    "css@attr"               -> that attribute
+    "css a, css b"           -> one CSS selector; matches come back in
+                                DOCUMENT order (what a chapter list wants)
+    ["css a", "css b"]       -> alternatives tried in PRIORITY order,
+                                first hit wins (what metadata wants)
 """
 from typing import Optional
 
-from bs4 import BeautifulSoup
-
-from scrapers.base import BaseScraper, NovelInfo, ChapterData
+from scrapers.spec import SiteScraper, QueryPage, NextLink, SinglePage
 
 
-class YourSiteScraper(BaseScraper):
-    """Template scraper — replace the class name (keep the `Scraper` suffix)."""
+class YourSiteScraper(SiteScraper):
+    """Template site spec — replace the class name (keep the `Scraper` suffix)."""
 
     # The domain(s) this plugin handles — THIS is what activates it.
-    # Set to your real domain(s) (e.g. ["mysite.com"]) and the plugin turns on.
-    # Empty = inactive: discovery skips this plugin, so it can never run
-    # or error until you fill this in.
+    # Empty = inactive: discovery skips it, so it can never run or error.
     domains = []
 
-    # Identifier used in logs / batch labels.
-    name = "example"
-    # Stored on novels scraped by this plugin (shows in the library meta).
-    source_site = "example.com"
+    name = "example"              # identifier used in logs / batch labels
+    source_site = "example.com"   # stored on novels scraped by this plugin
+    language = "zh"               # zh | ja | ko — the SOURCE language
 
     # ------------------------------------------------------------------
-    # 1) Novel listing page -> metadata + chapter list
+    # 1) Finding the novel's pages
     # ------------------------------------------------------------------
-    async def get_novel_info(self, url: str) -> Optional[NovelInfo]:
-        html = await self._fetch(url)          # GET with retries + rate limit
-        if not html:
-            return None
-        soup = self._parse_html(html)          # BeautifulSoup (lxml), ready to use
-
-        # --- FILL IN: extract from `soup` (site-specific selectors) ---
-        title = self._pick_title(soup)
-        if not title:
-            return None                        # not a novel page -> None
-
-        chapters = []
-        for i, a_tag in enumerate(self._pick_chapter_links(soup), start=1):
-            href = a_tag.get("href", "")
-            if not href:
-                continue
-            chapters.append(ChapterData(
-                number=i,
-                title=a_tag.get_text(strip=True) or f"Chapter {i}",
-                url=href,                      # ABSOLUTE url (use urljoin if relative)
-                content="",                    # content fetched separately
-            ))
-
-        return NovelInfo(
-            title=title,
-            author=self._pick_author(soup),    # or None
-            description=self._pick_description(soup),  # or ""
-            chapters=chapters,
-            total_chapters=len(chapters),
-        )
+    # OPTIONAL. Only needed when the chapter list lives at a different URL
+    # than the one a user pastes (people paste chapter links). The regex runs
+    # against the URL PATH and must have exactly one group.
+    #
+    #   novel_id_re = r"^/novel/(\d+)"
+    #   index_url   = "/novel/{novel_id}"        # metadata page
+    #   listing_url = "/novel/{novel_id}/toc"    # chapter list page
+    #
+    # Omit all three and the pasted URL is used for both.
+    novel_id_re: Optional[str] = None
+    index_url: Optional[str] = None
+    listing_url: Optional[str] = None
 
     # ------------------------------------------------------------------
-    # 2) Chapter page -> chapter text
+    # 2) The chapter list  (REQUIRED)
     # ------------------------------------------------------------------
-    async def get_chapter_content(self, url: str) -> Optional[ChapterData]:
-        html = await self._fetch(url)
-        if not html:
-            return None
-        soup = self._parse_html(html)
+    chapter_links = "ul.toc li a"
 
-        # --- FILL IN: extract the main text node(s) ---
-        content_node = soup.select_one(".chapter-content")   # example selector
-        if not content_node:
-            return None
-        content = content_node.get_text("\n", strip=True)   # paragraph-per-line
-
-        return ChapterData(
-            number=0,                          # filled in by the caller pipeline
-            title=self._pick_chapter_title(soup) or "",
-            content=self._clean_content(content),  # BaseScraper helper
-            url=url,
-        )
+    # How the list paginates. Pick ONE:
+    #   SinglePage()            — whole list on one page (default)
+    #   QueryPage("p")          — ?p=2, ?p=3, ...
+    #   QueryPage("page", start=1)
+    #   NextLink("a.next")      — follow a "next page" anchor
+    #   NextLink(texts=["次へ"]) — follow an anchor by its text
+    # The engine stops by itself once a page adds no new links, so you never
+    # need to know the page count.
+    paginate = SinglePage()
 
     # ------------------------------------------------------------------
-    # Helper extractors — these are EXAMPLES; replace selectors per site.
-    # Tip: inspect the site's HTML (DevTools) to find real selectors.
+    # 3) Novel metadata — all optional, all fall back to None
     # ------------------------------------------------------------------
-    def _pick_title(self, soup: BeautifulSoup) -> Optional[str]:
-        # Example: <h1 class="novel-title">Title</h1>
-        h = soup.select_one("h1.novel-title")
-        return h.get_text(strip=True) if h else None
+    meta = {
+        "title": ["h1.novel-title", "meta[property='og:title']@content"],
+        "author": "span.author-name",
+        "desc": "#synopsis",
+        "cover": "img.cover@src",
+    }
 
-    def _pick_author(self, soup: BeautifulSoup) -> Optional[str]:
-        # Example: <span class="author-name">Name</span>
-        s = soup.select_one("span.author-name")
-        return s.get_text(strip=True) if s else None
+    # ------------------------------------------------------------------
+    # 4) The chapter page  (content is REQUIRED)
+    # ------------------------------------------------------------------
+    content = ".chapter-body"
+    chapter_title = "h2.chapter-title"
 
-    def _pick_description(self, soup: BeautifulSoup) -> str:
-        # Example: <div id="synopsis">long text…</div>
-        d = soup.select_one("#synopsis")
-        return d.get_text(" ", strip=True) if d else ""
+    # Pull the chapter number out of the URL (one group). Optional.
+    chapter_number_re: Optional[str] = None      # e.g. r"/chapter/(\d+)"
+    # Strip junk from the chapter title, e.g. a "(1/2)" part marker. Optional.
+    chapter_title_strip: Optional[str] = None
 
-    def _pick_chapter_links(self, soup: BeautifulSoup):
-        # Example: <a class="chapter-item" href="/novel/.../ch/1">Ch 1</a>
-        # Return an iterable of <a> tags, in reading order.
-        return soup.select("a.chapter-item")
+    # Nodes removed from the body before the text is taken.
+    drop = ("script", "style", "ins", "iframe", ".ad")
+    # Body CANDIDATES whose class/id contains any of these are skipped — use it
+    # when a site puts an author's note in a node sharing the content class, so
+    # a 48-char note can't be scraped instead of the 5000-char chapter.
+    drop_classes = ()
+    # Descendants whose text STARTS WITH any of these are removed (site notices).
+    drop_text_prefixes = ()
 
-    def _pick_chapter_title(self, soup: BeautifulSoup) -> Optional[str]:
-        # Example: <h2 class="chapter-title">…</h2>
-        h = soup.select_one("h2.chapter-title")
-        return h.get_text(strip=True) if h else None
-
-
-# Keep a module-level alias so the registry line reads naturally:
-#   "example.com": YourSiteScraper
+    # ------------------------------------------------------------------
+    # 5) Escape hatch — only if the site genuinely needs it
+    # ------------------------------------------------------------------
+    # Sites that split ONE chapter across several pages implement this to return
+    # the next page OF THE SAME CHAPTER (return None to stop). The engine merges
+    # the parts.
+    #
+    # async def next_part_url(self, url: str, soup) -> Optional[str]:
+    #     return None

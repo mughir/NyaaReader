@@ -1,10 +1,12 @@
 /* NyaaReader service worker — network-first with static-app-shell cache.
    Keeps the UI shell available offline; content always hits the network
    (translations are live data, never stale-cached). */
-const CACHE = "nyaa-reader-v4";   /* NOTE: manual version bumps are OBSOLETE — backend main.py
-   _asset_stamp() appends ?v=<hash> to every asset URL, so any frontend edit
-   produces new URLs that miss this cache automatically. Keep this CACHE name
-   stable; only bump if you change the SW's own caching strategy. */
+const CACHE = "nyaa-reader-v5";   /* NOTE: manual version bumps are OBSOLETE for CONTENT —
+   backend main.py _asset_stamp() appends ?v=<hash> to every asset URL, and the
+   fetch handler below is network-first, so any frontend edit is picked up
+   automatically. Keep this name stable; bump it only when the SW's own caching
+   strategy changes (v4 -> v5 did: entries are now keyed by bare pathname, so
+   the old per-stamp entries need purging by activate()). */
 const SHELL = [
   "/static/styles.css",
   "/static/favicon.svg",
@@ -39,16 +41,29 @@ self.addEventListener("fetch", (e) => {
   if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/novel/")) {
     return;
   }
-  // App shell: cache-first for static assets
-  if (SHELL.includes(url.pathname)) {
-    e.respondWith(
-      caches.match(e.request).then(
-        (hit) => hit || fetch(e.request).then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(e.request, copy));
-          return res;
-        })
-      )
-    );
+  if (!SHELL.includes(url.pathname)) {
+    return;
   }
+  /* Shell assets are requested as /static/x.js?v=<stamp> (see _asset_stamp in
+     backend/main.py). Two consequences drive the strategy below:
+
+     1. NETWORK-FIRST. The stamp must always win — serving a cached copy for a
+        changed stamp would mask every frontend edit. The cache is purely the
+        offline fallback.
+     2. Cache under the BARE pathname, and match with ignoreSearch. Keying by
+        the full stamped URL meant the install-time precache (bare paths) never
+        matched a real request, so the shell was never actually available
+        offline, and every edit added one more permanent entry to the cache. */
+  const key = new Request(url.origin + url.pathname);
+  e.respondWith(
+    fetch(e.request)
+      .then((res) => {
+        if (res && res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(key, copy)).catch(() => {});
+        }
+        return res;
+      })
+      .catch(() => caches.match(key, { ignoreSearch: true }))
+  );
 });
