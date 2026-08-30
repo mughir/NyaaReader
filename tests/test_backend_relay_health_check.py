@@ -31,6 +31,29 @@ def _fake_models_response(model_ids):
     return _Resp()
 
 
+def _fake_chat_response(reply_content="hi there"):
+    body = json.dumps({"choices": [{"message": {"content": reply_content}}]}).encode()
+
+    class _Resp:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def read(self):
+            return body
+    return _Resp()
+
+
+def _urlopen_that_answers(model_ids, reply="hi there"):
+    """urlopen fake: /models returns the list, /chat/completions answers."""
+    def _urlopen(req, timeout=None):
+        url = req.full_url
+        if url.endswith("/chat/completions"):
+            return _fake_chat_response(reply)
+        return _fake_models_response(model_ids)
+    return _urlopen
+
+
 class TestModelEnvFallback:
     def test_empty_payload_checks_the_env_configured_model_not_a_no_op(self, monkeypatch):
         monkeypatch.setenv("FALLBACK_MODEL", "totally-unknown-model")
@@ -62,6 +85,64 @@ class TestModelEnvFallback:
 
         result = app_module._config_health_check_sync({"model": ""})
         assert result["models"]["model"] is True
+
+
+class TestChatGate:
+    """The save-time check must prove the AI ANSWERS, not just that the name
+    exists on the /models list. At least one real 'hi' round-trip is required
+    before Settings accepts the config (user requirement)."""
+
+    def test_model_that_answers_passes_chat_ok(self, monkeypatch):
+        monkeypatch.setenv("FALLBACK_MODEL", "deepseek-v4-flash")
+        monkeypatch.setattr("urllib.request.urlopen",
+                            _urlopen_that_answers(["deepseek-v4-flash"]))
+
+        result = app_module._config_health_check_sync({})
+        assert result["chat_ok"] is True
+        assert result["chat_message"] == "OK"
+
+    def test_model_listed_but_silent_fails_chat_ok(self, monkeypatch):
+        """A model on the list that returns empty content must NOT pass."""
+        monkeypatch.setenv("FALLBACK_MODEL", "deepseek-v4-flash")
+        monkeypatch.setattr("urllib.request.urlopen",
+                            _urlopen_that_answers(["deepseek-v4-flash"], reply=""))
+
+        result = app_module._config_health_check_sync({})
+        assert result["chat_ok"] is False
+        assert "empty content" in result["chat_message"]
+
+    def test_chat_bursting_raises_fails_chat_ok(self, monkeypatch):
+        def burst_on_chat(req, timeout=None):
+            if req.full_url.endswith("/chat/completions"):
+                raise RuntimeError("quota exceeded")
+            return _fake_models_response(["deepseek-v4-flash"])
+        monkeypatch.setenv("FALLBACK_MODEL", "deepseek-v4-flash")
+        monkeypatch.setattr("urllib.request.urlopen", burst_on_chat)
+
+        result = app_module._config_health_check_sync({})
+        assert result["chat_ok"] is False
+        assert "failed the test query" in result["chat_message"]
+
+    def test_model_not_on_list_skips_chat_and_stays_invalid(self, monkeypatch):
+        """If the name isn't even on the relay, don't burn a chat call — the
+        model check already failed and the frontend clears the name."""
+        monkeypatch.setenv("FALLBACK_MODEL", "totally-unknown-model")
+        monkeypatch.setattr("urllib.request.urlopen",
+                            _urlopen_that_answers(["deepseek-v4-flash"]))
+
+        result = app_module._config_health_check_sync({})
+        assert result["models"]["model"] is False
+        # name check fails first → chat gate not reached / stays True
+        assert result["chat_ok"] is True
+
+    def test_no_model_configured_reports_no_test_query(self, monkeypatch):
+        monkeypatch.setenv("FALLBACK_MODEL", "")
+        monkeypatch.setattr("urllib.request.urlopen",
+                            _urlopen_that_answers(["deepseek-v4-flash"]))
+
+        result = app_module._config_health_check_sync({})
+        assert result["chat_ok"] is True
+        assert "not configured" in result["chat_message"]
 
 
 class TestProactiveCheckCachesAndLogs(object):

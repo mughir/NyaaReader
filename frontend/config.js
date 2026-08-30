@@ -33,6 +33,10 @@
             relayWarning.value = h.message || "A configured model was not found on the relay.";
             return;
           }
+          if (h.chat_ok === false) {
+            relayWarning.value = h.chat_message || "Configured model did not answer the test query.";
+            return;
+          }
           relayWarning.value = "";
         } catch (e) { /* non-fatal — Settings still works without this */ }
       }
@@ -133,6 +137,23 @@
               cfg.value.fallback_model_2 = "";
               cfg.fallback_model_2 = "";
             }
+          }
+          // ---- Test query gate ----
+          // The model can exist on the relay's list yet fail to ANSWER (wrong
+          // key scope, quota, retired alias, relay bug). Saving a config that
+          // never produces a translation is worse than refusing the save — so
+          // before anything is written, at least ONE real "hi" query must be
+          // answered. Model 1 is mandatory; Model 2 (own relay) is validated
+          // server-side too and reported via fallback_2.chat_ok.
+          if (hc && cfg.value.fallback_model && hc.chat_ok === false) {
+            err.value = `Model "${cfg.value.fallback_model}" did not answer the test query — NOT saved. ${hc.chat_message || ""}`;
+            saving.value = false;
+            return;
+          }
+          if (hc && cfg.value.fallback_model_2 && hc.fallback_2 && hc.fallback_2.chat_ok === false) {
+            err.value = `Model 2 "${cfg.value.fallback_model_2}" did not answer the test query — NOT saved. ${hc.fallback_2.chat_message || ""}`;
+            saving.value = false;
+            return;
           }
         } catch (e) { /* health-check non-fatal on network error */ }
 
