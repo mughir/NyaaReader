@@ -2784,11 +2784,16 @@ async def put_config(payload: dict, background_tasks: BackgroundTasks = None,
 async def config_health_check(payload: dict = None):
     """Verify relay credentials before saving (Settings save-time check).
 
-    Step 1 — key + base URL: GET {base_url}/models with the key.
+    Step 1 — key + base URL: GET {base}/models with the key.
     Step 2 — model names: each must appear in the returned model list.
+    Step 3 — test query: at least ONE real chat round-trip ('hi') must be
+    answered, proving the model actually produces output (a name on the
+    /models list does not prove it can answer).
 
     Returns per-field validity so the frontend can save the good parts and
-    clear only a bad model name (never the whole config).
+    clear only a bad model name (never the whole config). chat_ok=false
+    blocks the save entirely — a config whose AI never answers is not
+    worth saving.
     """
     import os as _os
     import urllib.request, json as _json, urllib.error
@@ -2805,6 +2810,39 @@ async def config_health_status():
     this request. {} until the first one has run. Lets the Settings page warn
     about a bad model without the user having to click Save to find out."""
     return _relay_health_cache or {"checked_at": None}
+
+
+def _chat_completions_sync(base: str, key: str, model: str, timeout: int = 25) -> str:
+    """Send one tiny chat message ('hi') and return the reply content.
+
+    The /models list proves a name EXISTS and the key can LIST; it proves
+    nothing about whether the model actually ANSWERS (wrong key scope,
+    exhausted quota, retired-but-aliased model, relay routing bug). Settings
+    save-time validation therefore requires at least one real chat round-trip.
+    """
+    import urllib.request as _ur, json as _json
+    url = f"{base}/chat/completions"
+    payload = _json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 64,
+        "temperature": 0,
+    }).encode()
+    req = _ur.Request(url, data=payload, headers={
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+        "X-Title": "Hermes Agent",
+        "User-Agent": "HermesAgent/3.1.0",
+    })
+    with _ur.urlopen(req, timeout=timeout) as resp:
+        data = _json.loads(resp.read().decode())
+    content = ""
+    try:
+        content = data["choices"][0]["message"].get("content") or ""
+    except (KeyError, IndexError, TypeError):
+        content = ""
+    return content.strip()
 
 
 def _config_health_check_sync(p: dict) -> dict:
@@ -2857,15 +2895,47 @@ def _config_health_check_sync(p: dict) -> dict:
         message = f"Model '{model1}' not found on relay (cleared)"
     elif not m2_ok:
         message = f"Model 2 '{model2}' not found on relay (cleared)"
-    
-    # If Model 2 has separate URL/key, test that too
+
+    # Real chat round-trip: at least ONE successful 'hi' query must be
+    # answered before the config is accepted. A model name on the /models
+    # list does not prove it answers (wrong key scope, quota, retired
+    # alias, relay bug) — the user's requirement. Model 1 is mandatory;
+    # Model 2 (own relay) is tested here too.
+    chat_model = True
+    chat_msg = "OK"
+    if model1 and m1_ok:
+        try:
+            reply = _chat_completions_sync(base, key, model1)
+            chat_model = bool(reply)
+            if not chat_model:
+                chat_msg = f"Model '{model1}' answered with empty content — check key/quota"
+        except Exception as e:
+            chat_model = False
+            chat_msg = f"Model '{model1}' failed the test query: {e}"
+    elif not model1:
+        chat_msg = "Model 1 not configured — no test query run"
+
+    # Model 2's own relay (same value as `model2` above)
     m2_base = (p.get("fallback_2_base_url") or _os.getenv("FALLBACK_2_BASE_URL", "")).strip().rstrip("/")
     m2_key = (p.get("fallback_2_api_key") or _os.getenv("FALLBACK_2_API_KEY", "")).strip()
-    
+    m2_model = model2
+
+    chat_model_2 = True
+    chat_msg_2 = "OK"
+    m2_separate = m2_base and m2_key and m2_base != base
+    if m2_separate and m2_model:
+        try:
+            reply = _chat_completions_sync(m2_base, m2_key, m2_model)
+            chat_model_2 = bool(reply)
+            if not chat_model_2:
+                chat_msg_2 = f"Model 2 '{m2_model}' answered with empty content — check key/quota"
+        except Exception as e:
+            chat_model_2 = False
+            chat_msg_2 = f"Model 2 '{m2_model}' failed the test query: {e}"
+
     fallback2_result = {}
     if m2_base and m2_key and m2_base != base:
         # Test Model 2's separate relay (same value as `model2` above)
-        m2_model = model2
         available2 = []
         url2 = f"{m2_base}/models"
         try:
@@ -2890,13 +2960,15 @@ def _config_health_check_sync(p: dict) -> dict:
                 return any(a.lower() == n for a in available2) or any(n in a.lower() for a in available2)
             m2_model_ok = valid2(m2_model)
             if not m2_model_ok:
-                fallback2_result = {"key_ok": True, "message": f"Model 2 '{m2_model}' not found on its relay (cleared)", "models": {"model": False}}
+                fallback2_result = {"key_ok": True, "message": f"Model 2 '{m2_model}' not found on its relay (cleared)", "models": {"model": False}, "chat_ok": False, "chat_message": f"Model 2 '{m2_model}' not found on its relay"}
             else:
-                fallback2_result = {"key_ok": True, "models": {"model": m2_model_ok}, "available_count": len(available2), "message": "OK"}
-    
+                fallback2_result = {"key_ok": True, "models": {"model": m2_model_ok}, "available_count": len(available2), "message": "OK", "chat_ok": chat_model_2, "chat_message": chat_msg_2}
+
     return {
         "key_ok": key_ok,
         "models": {"model": m1_ok, "model_2": m2_ok},
+        "chat_ok": chat_model,
+        "chat_message": chat_msg,
         "available_count": len(available),
         "message": message,
         "fallback_2": fallback2_result if fallback2_result else None
@@ -3120,6 +3192,8 @@ def _check_relay_health_bg():
         logger.warning(f"relay health check: {result.get('message')}")
     elif not all(result.get("models", {}).values()):
         logger.warning(f"relay health check: {result.get('message')}")
+    elif result.get("chat_ok") is False:
+        logger.warning(f"relay health check: {result.get('chat_message')}")
     else:
         logger.info("relay health check: OK")
 
