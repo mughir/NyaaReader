@@ -110,23 +110,38 @@
         saving.value = true; msg.value = ""; err.value = "";
         // ---- Health-check BEFORE saving ----
         // Step 1: key + base URL reach the relay. Step 2: model names exist.
-        // If key/base fail, abort (nothing saved). If a model is wrong, clear it
-        // and save the rest.
+        // Step 3: at least one real chat round-trip ('hi') must be answered.
+        // If key/base fail, abort (nothing saved). If a model is wrong/never
+        // answers, clear it or (when the relay suggests the exact id) apply
+        // the corrected name and re-check once.
         try {
-          const hc = await fetch("/api/config/health-check", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              api_key: cfg.value.fallback_api_key || undefined,
-              base_url: cfg.value.fallback_base_url,
-              model: cfg.value.fallback_model,
-              model_2: cfg.value.fallback_model_2,
-            }),
-          }).then(r => r.json()).catch(() => null);
-          if (hc && hc.key_ok === false) {
-            err.value = hc.message || "Relay health check failed";
-            saving.value = false;
-            return;
+          let hc = null;
+          for (let attempt = 0; attempt < 2; attempt++) {
+            hc = await fetch("/api/config/health-check", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                api_key: cfg.value.fallback_api_key || undefined,
+                base_url: cfg.value.fallback_base_url,
+                model: cfg.value.fallback_model,
+                model_2: cfg.value.fallback_model_2,
+              }),
+            }).then(r => r.json()).catch(() => null);
+            if (!hc) break;
+            if (hc.key_ok === false) {
+              err.value = hc.message || "Relay health check failed";
+              saving.value = false;
+              return;
+            }
+            // Case-sensitive model id suggestion from the relay — the old
+            // /models list check matched "MiMo-V2.5" against "mimo-v2.5"
+            // case-insensitively, but the real chat call 401s. Apply the
+            // exact id automatically and retry the check once.
+            if (hc.chat_ok === false && hc.chat_suggested && attempt === 0) {
+              cfg.value.fallback_model = hc.chat_suggested;
+              continue;
+            }
+            break;
           }
           if (hc && hc.models) {
             if (!hc.models.model && cfg.value.fallback_model) {
