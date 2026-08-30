@@ -2903,6 +2903,7 @@ def _config_health_check_sync(p: dict) -> dict:
     # Model 2 (own relay) is tested here too.
     chat_model = True
     chat_msg = "OK"
+    chat_suggested = None
     if model1 and m1_ok:
         try:
             reply = _chat_completions_sync(base, key, model1)
@@ -2912,6 +2913,14 @@ def _config_health_check_sync(p: dict) -> dict:
         except Exception as e:
             chat_model = False
             chat_msg = f"Model '{model1}' failed the test query: {e}"
+            # Relay model ids are CASE-SENSITIVE (mixed-case 'MiMo-V2.5' is
+            # a 401 ModelError even though the /models list matched it
+            # case-insensitively). If the typed name is a case-only variant
+            # of a real id, say exactly which id to use.
+            sugg = next((a for a in available if a.lower() == model1.lower()), None)
+            if sugg and sugg != model1:
+                chat_suggested = sugg
+                chat_msg += f" Did you mean '{sugg}'? Model ids are case-sensitive."
     elif not model1:
         chat_msg = "Model 1 not configured — no test query run"
 
@@ -2922,21 +2931,13 @@ def _config_health_check_sync(p: dict) -> dict:
 
     chat_model_2 = True
     chat_msg_2 = "OK"
-    m2_separate = m2_base and m2_key and m2_base != base
-    if m2_separate and m2_model:
-        try:
-            reply = _chat_completions_sync(m2_base, m2_key, m2_model)
-            chat_model_2 = bool(reply)
-            if not chat_model_2:
-                chat_msg_2 = f"Model 2 '{m2_model}' answered with empty content — check key/quota"
-        except Exception as e:
-            chat_model_2 = False
-            chat_msg_2 = f"Model 2 '{m2_model}' failed the test query: {e}"
-
+    chat_suggested_2 = None
     fallback2_result = {}
-    if m2_base and m2_key and m2_base != base:
-        # Test Model 2's separate relay (same value as `model2` above)
-        available2 = []
+    m2_separate = m2_base and m2_key and m2_base != base
+    available2 = []
+    if m2_separate:
+        # Fetch Model 2's separate relay list first (needed for the name
+        # check AND for case-sensitive suggestions on the chat test).
         url2 = f"{m2_base}/models"
         try:
             req = urllib.request.Request(url2, headers={
@@ -2963,12 +2964,32 @@ def _config_health_check_sync(p: dict) -> dict:
                 fallback2_result = {"key_ok": True, "message": f"Model 2 '{m2_model}' not found on its relay (cleared)", "models": {"model": False}, "chat_ok": False, "chat_message": f"Model 2 '{m2_model}' not found on its relay"}
             else:
                 fallback2_result = {"key_ok": True, "models": {"model": m2_model_ok}, "available_count": len(available2), "message": "OK", "chat_ok": chat_model_2, "chat_message": chat_msg_2}
+    if m2_separate and m2_model and fallback2_result.get("models", {}).get("model"):
+        # Real chat round-trip for Model 2's own relay — same case-sensitivity
+        # handling as Model 1.
+        try:
+            reply = _chat_completions_sync(m2_base, m2_key, m2_model)
+            chat_model_2 = bool(reply)
+            if not chat_model_2:
+                chat_msg_2 = f"Model 2 '{m2_model}' answered with empty content — check key/quota"
+        except Exception as e:
+            chat_model_2 = False
+            chat_msg_2 = f"Model 2 '{m2_model}' failed the test query: {e}"
+            sugg2 = next((a for a in available2 if a.lower() == m2_model.lower()), None)
+            if sugg2 and sugg2 != m2_model:
+                chat_suggested_2 = sugg2
+                chat_msg_2 += f" Did you mean '{sugg2}'? Model ids are case-sensitive."
+        fallback2_result["chat_ok"] = chat_model_2
+        fallback2_result["chat_message"] = chat_msg_2
+        if chat_suggested_2:
+            fallback2_result["chat_suggested"] = chat_suggested_2
 
     return {
         "key_ok": key_ok,
         "models": {"model": m1_ok, "model_2": m2_ok},
         "chat_ok": chat_model,
         "chat_message": chat_msg,
+        "chat_suggested": chat_suggested,
         "available_count": len(available),
         "message": message,
         "fallback_2": fallback2_result if fallback2_result else None

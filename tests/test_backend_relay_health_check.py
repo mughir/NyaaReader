@@ -54,6 +54,24 @@ def _urlopen_that_answers(model_ids, reply="hi there"):
     return _urlopen
 
 
+def _urlopen_error_on_chat(model_ids, error_body):
+    """urlopen fake: /models returns the list, /chat/completions raises HTTPError."""
+    import urllib.error
+
+    class _Err:
+        def __init__(self, code, body):
+            self.code = code
+            self.body = body
+        def read(self):
+            return self.body.encode()
+    def _urlopen(req, timeout=None):
+        url = req.full_url
+        if url.endswith("/chat/completions"):
+            raise urllib.error.HTTPError(url, 401, "Unauthorized", {}, _Err(401, error_body))
+        return _fake_models_response(model_ids)
+    return _urlopen
+
+
 class TestModelEnvFallback:
     def test_empty_payload_checks_the_env_configured_model_not_a_no_op(self, monkeypatch):
         monkeypatch.setenv("FALLBACK_MODEL", "totally-unknown-model")
@@ -134,6 +152,22 @@ class TestChatGate:
         assert result["models"]["model"] is False
         # name check fails first → chat gate not reached / stays True
         assert result["chat_ok"] is True
+
+    def test_case_sensitive_model_id_gets_a_suggestion(self, monkeypatch):
+        """MiMo-V2.5 vs real id mimo-v2.5: the /models list matches
+        case-insensitively but the chat call 401s — the check must name the
+        correct, case-exact id so the Settings page can auto-apply it."""
+        monkeypatch.setenv("FALLBACK_MODEL", "MiMo-V2.5")
+        monkeypatch.setattr("urllib.request.urlopen",
+                            _urlopen_error_on_chat(
+                                ["deepseek-v4-flash", "mimo-v2.5"],
+                                '{"error":{"type":"ModelError","message":"Model MiMo-V2.5 is not supported"}}'))
+
+        result = app_module._config_health_check_sync({})
+        assert result["models"]["model"] is True, "list check is case-insensitive so name passes"
+        assert result["chat_ok"] is False
+        assert result["chat_suggested"] == "mimo-v2.5"
+        assert "case-sensitive" in result["chat_message"]
 
     def test_no_model_configured_reports_no_test_query(self, monkeypatch):
         monkeypatch.setenv("FALLBACK_MODEL", "")
