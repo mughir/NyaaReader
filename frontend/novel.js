@@ -627,16 +627,27 @@
   </header>
 
   <div class="container">
-    <div class="hero">
-      <div class="hero-cover">
-        <img v-if="novel.cover_url" class="cover" :src="novel.cover_url" :alt="novel.title">
-        <div v-else class="cover" style="display:flex;align-items:center;justify-content:center;font-size:44px">📖</div>
-        <div class="cover-actions" v-if="!generatingCover && !uploadingCover">
-          <button class="cover-act" @click="generateCover" title="Generate AI cover">🎨</button>
-          <button class="cover-act" @click="coverInput && coverInput.click()" title="Upload cover">⬆</button>
+    <div class="hero" :class="{ 'has-bg': !!novel.cover_url }">
+      <!-- blurred cover backdrop (fill the card, not dead space) -->
+      <div class="hero-bg" :class="{on: !!novel.cover_url}"
+           :style="novel.cover_url ? { backgroundImage: 'url(' + novel.cover_url + ')' } : {}"></div>
+      <div class="hero-left">
+        <div class="hero-cover">
+          <img v-if="novel.cover_url" class="cover" :src="novel.cover_url" :alt="novel.title">
+          <div v-else class="cover" style="display:flex;align-items:center;justify-content:center;font-size:44px">📖</div>
+          <div class="cover-actions" v-if="!generatingCover && !uploadingCover">
+            <button class="cover-act" @click="generateCover" title="Generate AI cover">🎨</button>
+            <button class="cover-act" @click="coverInput && coverInput.click()" title="Upload cover">⬆</button>
+          </div>
+          <div class="cover-actions" v-else>
+            <span class="cover-act spin">{{ generatingCover ? '🎨' : '⬆' }}</span>
+          </div>
         </div>
-        <div class="cover-actions" v-else>
-          <span class="cover-act spin">{{ generatingCover ? '🎨' : '⬆' }}</span>
+        <!-- badges now live under the cover, filling the left column -->
+        <div class="hero-meta">
+          <span class="badge">{{ novel.original_language }} → {{ novel.target_language }}</span>
+          <span class="badge">{{ novel.status }}</span>
+          <span class="badge ok">✓ {{ translatedCount }} / {{ novel.total_chapters }} translated</span>
         </div>
       </div>
       <div class="info">
@@ -649,12 +660,7 @@
           <button class="orig-toggle" @click="showOrig = !showOrig">{{ showOrig ? '▾ Hide' : '▸ Show' }} original text</button>
           <div v-if="showOrig" class="desc desc-orig">{{ novel.description }}</div>
         </div>
-        <div class="badges">
-          <span class="badge">{{ novel.original_language }} → {{ novel.target_language }}</span>
-          <span class="badge">{{ novel.status }}</span>
-          <span class="badge ok">✓ {{ translatedCount }} / {{ novel.total_chapters }} translated</span>
-        </div>
-        <div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <a class="btn" :href="'/novel/' + novel.id + '/chapter/' + readTarget" title="Jump to the latest translated chapter">
             <svg class="ic"><use href="#i-book"/></svg> Read
           </a>
