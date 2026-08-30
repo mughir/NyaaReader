@@ -682,7 +682,10 @@ body, .topbar, .reader-toolbar, .toc-drawer, .settings-pop, .sel-pop, .recap-car
   border-top: 5px solid var(--text-dim); margin-left: 3px; display: inline-block; }
 
 /* ---------- Cover hover actions ---------- */
-.hero-cover { position: relative; flex-shrink: 0; }
+/* align-self: flex-start — .hero is a flex row and would otherwise STRETCH
+   this wrapper to the info column's full height, leaving a huge empty slab
+   under a small 130×173 cover (and centering hover actions in the void). */
+.hero-cover { position: relative; flex-shrink: 0; align-self: flex-start; }
 .hero-cover .cover { display: block; }
 .cover-actions { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   gap: 8px; background: rgba(12, 10, 18, .55); opacity: 0; transition: opacity .15s; border-radius: 8px;
