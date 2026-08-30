@@ -2819,13 +2819,18 @@ def _chat_completions_sync(base: str, key: str, model: str, timeout: int = 25) -
     nothing about whether the model actually ANSWERS (wrong key scope,
     exhausted quota, retired-but-aliased model, relay routing bug). Settings
     save-time validation therefore requires at least one real chat round-trip.
+
+    max_tokens is deliberately generous (512): several relay models are
+    thinking models that burn output tokens on reasoning BEFORE emitting
+    visible content — a 64-token cap made them return finish_reason=length
+    with an empty content, falsely failing the gate.
     """
     import urllib.request as _ur, json as _json
     url = f"{base}/chat/completions"
     payload = _json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": "hi"}],
-        "max_tokens": 64,
+        "max_tokens": 512,
         "temperature": 0,
     }).encode()
     req = _ur.Request(url, data=payload, headers={
@@ -2981,6 +2986,25 @@ def _config_health_check_sync(p: dict) -> dict:
                 chat_msg_2 += f" Did you mean '{sugg2}'? Model ids are case-sensitive."
         fallback2_result["chat_ok"] = chat_model_2
         fallback2_result["chat_message"] = chat_msg_2
+        if chat_suggested_2:
+            fallback2_result["chat_suggested"] = chat_suggested_2
+    elif m2_model and m2_ok:
+        # Model 2 shares Model 1's relay/key — still prove it ANSWERS, not
+        # just that its name is on the list (same case-sensitivity trap as
+        # Model 1: 'MiMo-V2.5' list-matches 'mimo-v2.5' but chat 401s).
+        try:
+            reply = _chat_completions_sync(base, key, m2_model)
+            chat_model_2 = bool(reply)
+            if not chat_model_2:
+                chat_msg_2 = f"Model 2 '{m2_model}' answered with empty content — check key/quota"
+        except Exception as e:
+            chat_model_2 = False
+            chat_msg_2 = f"Model 2 '{m2_model}' failed the test query: {e}"
+            sugg2 = next((a for a in available if a.lower() == m2_model.lower()), None)
+            if sugg2 and sugg2 != m2_model:
+                chat_suggested_2 = sugg2
+                chat_msg_2 += f" Did you mean '{sugg2}'? Model ids are case-sensitive."
+        fallback2_result = {"key_ok": True, "chat_ok": chat_model_2, "chat_message": chat_msg_2}
         if chat_suggested_2:
             fallback2_result["chat_suggested"] = chat_suggested_2
 
