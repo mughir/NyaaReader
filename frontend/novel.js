@@ -628,9 +628,12 @@
 
   <div class="container">
     <div class="hero" :class="{ 'has-bg': !!novel.cover_url }">
-      <!-- blurred cover backdrop (fill the card, not dead space) -->
-      <div class="hero-bg" :class="{on: !!novel.cover_url}"
-           :style="novel.cover_url ? { backgroundImage: 'url(' + novel.cover_url + ')' } : {}"></div>
+      <!-- blurred cover backdrop (fill the card, not dead space). Wrapped in
+           its own clipped layer so .hero never needs overflow:hidden — that
+           would clip the floating more-menu popover below the card. -->
+      <div class="hero-bg-clip" v-if="novel.cover_url">
+        <div class="hero-bg" :style="{ backgroundImage: 'url(' + novel.cover_url + ')' }"></div>
+      </div>
       <div class="hero-left">
         <div class="hero-cover">
           <img v-if="novel.cover_url" class="cover" :src="novel.cover_url" :alt="novel.title">

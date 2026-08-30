@@ -207,13 +207,14 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .add-form .hint { width: 100%; color: var(--text-dim); font-size: 12px; }
 
 /* ---------- Novel hero ---------- */
-.hero { position: relative; overflow: hidden; display: flex; gap: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-top: 16px; box-shadow: var(--shadow); }
+.hero { position: relative; display: flex; gap: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-top: 16px; box-shadow: var(--shadow); }
 /* blurred cover backdrop — the big visual win: fills the whole card with the
    cover art blurred + dimmed so the hero no longer shows dead white space.
-   Falls back to nothing when no cover exists (hero just stays surface). */
+   The -clip wrapper owns border-radius/overflow so the hero itself does NOT
+   clip (a clipped hero would cut the floating more-menu popover). */
+.hero-bg-clip { position: absolute; inset: 0; border-radius: var(--radius); overflow: hidden; pointer-events: none; }
 .hero-bg { position: absolute; inset: -20px; background-size: cover; background-position: center;
-  filter: blur(18px) brightness(0.72) saturate(1.15); opacity: 0; transition: opacity .25s; pointer-events: none; }
-.hero-bg.on { opacity: 1; }
+  filter: blur(18px) brightness(0.72) saturate(1.15); }
 /* dark scrim so text stays readable over the blurred image */
 .hero-bg::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(10,8,16,.55), rgba(10,8,16,.78)); }
 /* when a cover provides the backdrop, switch text to light-on-dark */
@@ -225,13 +226,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .hero.has-bg .hero-meta .badge.ok { color: #86efac; border-color: rgba(134,239,172,.5); background: rgba(21,128,61,.28); }
 .hero.has-bg .hero-meta .badge.ok { color: #86efac; }
 .hero.has-bg .more-item:not(.danger) { color: rgba(15,12,24,.9); }
-.hero-left { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+.hero-left { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; position: relative; z-index: 1; }
 .hero-cover { position: relative; flex-shrink: 0; }
 .hero-cover .cover { display: block; width: 130px; height: 173px; object-fit: cover; border-radius: var(--radius-sm); background: var(--surface-2); box-shadow: var(--shadow); }
 /* badges under the cover — uses the once-dead left column */
 .hero-meta { display: flex; flex-direction: column; gap: 5px; width: 130px; }
 .hero-meta .badge { justify-content: center; text-align: center; }
-.hero .info { position: relative; flex: 1; min-width: 0; }
+.hero .info { position: relative; z-index: 1; flex: 1; min-width: 0; }
 .hero h1 { font-size: 19px; line-height: 1.3; }
 .hero .byline { color: var(--text-dim); font-size: 13px; margin: 3px 0 6px; }
 .hero .desc { font-size: 14px; color: var(--text); white-space: pre-wrap; max-height: none; overflow: hidden; scrollbar-width: thin; }
