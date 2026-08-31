@@ -571,10 +571,6 @@ body.toolbar-hidden .reader-toolbar { transform: translateY(-100%); opacity: 0; 
   .novel-card .cover-initial { font-size: 38px; }
   .novel-card h3 { font-size: 13.5px; }
   .novel-card .card-body { padding: 9px 10px 11px; }
-  @media (max-width: 360px) {
-    .novel-card { width: 140px; }
-    .novel-card .card-actions .btn { font-size: 11px; padding: 3px 7px; }
-  }
   /* topbar: brand + crumb + icon-group right-aligned */
   .topbar { padding: 8px 10px; }
   .topbar > .container { gap: 8px; }
@@ -721,7 +717,10 @@ body, .topbar, .reader-toolbar, .toc-drawer, .settings-pop, .sel-pop, .recap-car
 .dash-recent { display: flex; flex-direction: column; gap: 6px; }
 .dash-row { display: flex; align-items: center; gap: 10px; background: var(--surface);
   border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 11px 14px; font-size: 13px;
-  box-shadow: var(--shadow); }
+  box-shadow: var(--shadow); color: inherit; text-decoration: none;
+  transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease; }
+.dash-row:hover { transform: translateY(-1px); border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  box-shadow: var(--shadow-lg); text-decoration: none; color: inherit; }
 .dash-row-novel { font-weight: 600; max-width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
 .dash-row-ch { color: var(--text-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dash-row-time { font-size: 11px; color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -742,18 +741,25 @@ body, .topbar, .reader-toolbar, .toc-drawer, .settings-pop, .sel-pop, .recap-car
 .caret { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent;
   border-top: 5px solid var(--text-dim); margin-left: 3px; display: inline-block; }
 
-/* ---------- Cover hover actions ---------- */
-/* .hero-cover sizing lives with the novel-hero rules above; here only the
-   hover overlay (centered on the cover itself, not the old stretched void). */
+/* ---------- Cover hover & touch actions ---------- */
 .cover-actions { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   gap: 8px; background: rgba(12, 10, 18, .55); opacity: 0; transition: opacity .15s; border-radius: 8px;
   backdrop-filter: blur(2px); }
 .hero-cover:hover .cover-actions { opacity: 1; }
+@media (pointer: coarse) {
+  .cover-actions { opacity: .85; background: rgba(12, 10, 18, .35); }
+}
 .cover-act { width: 40px; height: 40px; border-radius: 50%; border: 0; cursor: pointer;
   background: rgba(255,255,255,.92); font-size: 17px; display: flex; align-items: center; justify-content: center;
   box-shadow: 0 2px 8px rgba(0,0,0,.3); }
 .cover-act:hover { background: #fff; transform: scale(1.08); }
 .cover-act.spin { animation: spin 1s linear infinite; background: rgba(255,255,255,.9); }
+
+/* ---------- Compact screens (<360px) ---------- */
+@media (max-width: 360px) {
+  .novel-card { width: 140px; }
+  .novel-card .card-actions .btn { font-size: 11px; padding: 3px 7px; }
+}
 
 /* ---------- Show-original toggle ---------- */
 .orig-toggle { background: none; border: 0; color: var(--accent-strong); font-size: 12px;

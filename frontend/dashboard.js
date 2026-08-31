@@ -82,11 +82,11 @@
 
       <h2 class="section-title"><svg class="ic"><use href="#i-clock"/></svg> Recent activity</h2>
       <div v-if="stats.recent.length" class="dash-recent">
-        <div v-for="(r, i) in stats.recent" :key="i" class="dash-row">
+        <a v-for="(r, i) in stats.recent" :key="i" class="dash-row" :href="'/novel/' + r.novel_id + '/chapter/' + r.chapter_number" :title="'Continue reading ' + r.novel + ' Ch ' + r.chapter_number">
           <span class="dash-row-novel" :title="r.novel">{{ r.novel }}</span>
           <span class="dash-row-ch" :title="r.chapter_title">Ch {{ r.chapter_number }} · {{ r.chapter_title }}</span>
           <span class="dash-row-time">{{ fmtDate(r.read_at) }}</span>
-        </div>
+        </a>
       </div>
       <div v-else class="muted">No reading activity yet — open a chapter to start.</div>
     </template>

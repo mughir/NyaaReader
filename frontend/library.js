@@ -103,7 +103,7 @@
       <a class="brand" href="/"><span class="logo-mark"><svg class="ic ic-lg"><use href="#i-cat"/></svg></span> NyaaReader</a>
       <span class="flex-spacer"></span>
       <nav class="topnav">
-        <a class="nav-link active" href="/"> <svg class="ic"><use href="#i-home"/></svg><span class="nav-label">Library ({{ novels.length }})</span></a>
+        <a class="nav-link active" href="/"><svg class="ic"><use href="#i-home"/></svg><span class="nav-label">Library</span></a>
         <a class="nav-link" href="/dashboard"><svg class="ic"><use href="#i-sparkle"/></svg><span class="nav-label">Dashboard</span></a>
         <a class="nav-link" href="/config"><svg class="ic"><use href="#i-settings"/></svg><span class="nav-label">Settings</span></a>
       </nav>
@@ -147,9 +147,8 @@
           <div class="meta" v-if="n.translated_chapters > 0">✓ {{ n.translated_chapters }}/{{ n.total_chapters }} translated</div>
           <div class="progress-mini"><div :style="{width: pct(n) + '%'}"></div></div>
           <div class="meta" v-if="n.read_chapters > 0">📖 read {{ n.read_chapters }}/{{ n.total_chapters }} ({{ readPct(n) }}%)</div>
-          <div class="card-actions">
-            <span class="btn small" @click.prevent="openNovel(n.id)"><svg class="ic"><use href="#i-book-open"/></svg> Open</span>
-            <span v-if="n.last_read" class="btn small accent" @click.prevent="openChapter(n.id, n.last_read.chapter_number)" title="Continue reading">Continue · Ch {{ n.last_read.chapter_number }}</span>
+          <div class="card-actions" v-if="n.last_read">
+            <span class="btn small accent" @click.prevent="openChapter(n.id, n.last_read.chapter_number)" title="Continue reading">Continue · Ch {{ n.last_read.chapter_number }}</span>
           </div>
         </div>
       </a>
