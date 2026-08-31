@@ -73,6 +73,53 @@ def init_db():
     _ensure_columns()
     _clean_orphans()
     _reconcile_total_chapters()
+    _init_fts()
+
+
+def _init_fts():
+    """Create and sync FTS5 full-text search virtual table for translated chapters."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS chapters_fts USING fts5(
+                    chapter_id UNINDEXED,
+                    novel_id UNINDEXED,
+                    chapter_number UNINDEXED,
+                    title_translated,
+                    translated_content,
+                    tokenize='unicode61 remove_diacritics 2'
+                )
+            """))
+            conn.execute(text("""
+                CREATE TRIGGER IF NOT EXISTS chapters_fts_ai AFTER INSERT ON chapters
+                BEGIN
+                    INSERT INTO chapters_fts(chapter_id, novel_id, chapter_number, title_translated, translated_content)
+                    VALUES (new.id, new.novel_id, new.chapter_number, coalesce(new.title_translated, ''), coalesce(new.translated_content, ''));
+                END
+            """))
+            conn.execute(text("""
+                CREATE TRIGGER IF NOT EXISTS chapters_fts_au AFTER UPDATE ON chapters
+                BEGIN
+                    DELETE FROM chapters_fts WHERE chapter_id = old.id;
+                    INSERT INTO chapters_fts(chapter_id, novel_id, chapter_number, title_translated, translated_content)
+                    VALUES (new.id, new.novel_id, new.chapter_number, coalesce(new.title_translated, ''), coalesce(new.translated_content, ''));
+                END
+            """))
+            conn.execute(text("""
+                CREATE TRIGGER IF NOT EXISTS chapters_fts_ad AFTER DELETE ON chapters
+                BEGIN
+                    DELETE FROM chapters_fts WHERE chapter_id = old.id;
+                END
+            """))
+            conn.execute(text("""
+                INSERT INTO chapters_fts(chapter_id, novel_id, chapter_number, title_translated, translated_content)
+                SELECT id, novel_id, chapter_number, coalesce(title_translated, ''), coalesce(translated_content, '')
+                FROM chapters
+                WHERE is_translated = 1 AND id NOT IN (SELECT chapter_id FROM chapters_fts)
+            """))
+        except Exception as e:
+            logging.getLogger("novel-reader").warning(f"FTS5 initialization warning (skipping or unsupported): {e}")
 
 
 def _reconcile_total_chapters():

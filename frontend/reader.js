@@ -337,6 +337,64 @@
       async function translate() {
         if (busy.value || isTranslated.value) return;
         busy.value = "translating"; error.value = "";
+
+        if (window.EventSource) {
+          try {
+            state.value.translated = "";
+            let streamSuccess = false;
+            const es = new EventSource(`/api/novels/${novelId}/chapters/${chapterNumber}/translate/stream`);
+
+            es.addEventListener("init", (e) => {
+              try {
+                const d = JSON.parse(e.data);
+                if (d.title) titleTranslated.value = d.title;
+              } catch (_) {}
+            });
+
+            es.addEventListener("delta", (e) => {
+              try {
+                const d = JSON.parse(e.data);
+                if (d.delta) {
+                  state.value.translated += d.delta;
+                  state.value.is_translated = true;
+                }
+              } catch (_) {}
+            });
+
+            es.addEventListener("done", (e) => {
+              streamSuccess = true;
+              es.close();
+              try {
+                const d = JSON.parse(e.data);
+                if (d.translated_content) state.value.translated = d.translated_content;
+                if (d.title_translated) titleTranslated.value = d.title_translated;
+                state.value.is_translated = true;
+                busy.value = "";
+                toast("Chapter translated ✓");
+                const item = (DATA.toc || []).find(c => c.n === chapterNumber);
+                if (item) item.done = true;
+              } catch (_) {
+                busy.value = "";
+              }
+            });
+
+            es.addEventListener("error", (e) => {
+              es.close();
+              if (!streamSuccess) {
+                fallbackTranslate();
+              }
+            });
+
+            return;
+          } catch (e) {
+            // Proceed to fallbackTranslate
+          }
+        }
+
+        fallbackTranslate();
+      }
+
+      async function fallbackTranslate() {
         try {
           const res = await fetch(`/api/novels/${novelId}/chapters/${chapterNumber}/translate`, { method: "POST" });
           if (!res.ok) throw new Error("translate start failed");
@@ -436,14 +494,28 @@
         }, 8000);
       }
 
+      const helpOpen = ref(false);
+
       function onKey(e) {
         // ignore when typing in an input/textarea
         const tag = (e.target.tagName || "").toLowerCase();
         if (tag === "input" || tag === "textarea" || tag === "select") return;
-        if (e.key === "ArrowLeft" && chapterNumber > 1) { window.location.href = `/novel/${novelId}/chapter/${chapterNumber - 1}`; }
-        else if (e.key === "ArrowRight" && chapterNumber < total) { window.location.href = `/novel/${novelId}/chapter/${chapterNumber + 1}`; }
-        else if (e.key.toLowerCase() === "t" && !isTranslated.value && hasOriginal.value) { translate(); }
-        else if (e.key === "Escape") { tocOpen.value = false; settingsOpen.value = false; focusMode.value = false; prefs.focus = false; savePrefs(); document.body.classList.remove("reader-focus"); }
+        if (e.key === "ArrowLeft" || e.key.toLowerCase() === "p") {
+          if (chapterNumber > 1) window.location.href = `/novel/${novelId}/chapter/${chapterNumber - 1}`;
+        }
+        else if (e.key === "ArrowRight" || e.key.toLowerCase() === "n") {
+          if (chapterNumber < total) window.location.href = `/novel/${novelId}/chapter/${chapterNumber + 1}`;
+        }
+        else if (e.key.toLowerCase() === "j") { window.scrollBy({ top: 220, behavior: "smooth" }); }
+        else if (e.key.toLowerCase() === "k") { window.scrollBy({ top: -220, behavior: "smooth" }); }
+        else if (e.key.toLowerCase() === "t") { tocOpen.value = !tocOpen.value; }
+        else if (e.key.toLowerCase() === "b") { toggleBookmarks(); }
+        else if (e.key.toLowerCase() === "s") { settingsOpen.value = !settingsOpen.value; }
+        else if (e.key === "?" || e.key === "/") { helpOpen.value = !helpOpen.value; }
+        else if (e.key === "Escape") {
+          helpOpen.value = false; tocOpen.value = false; settingsOpen.value = false; memOpen.value = false; bmOpen.value = false;
+          if (focusMode.value) { focusMode.value = false; prefs.focus = false; savePrefs(); document.body.classList.remove("reader-focus"); }
+        }
         else if (e.key === "f") { toggleFocus(); }
       }
 
@@ -729,10 +801,14 @@
         diaryText, diaryLoaded, diarySaving, diarySaved, diaryOpen,
         loadDiary, saveDiary, toggleDiary,
         scrollPct, nextChapterTitle, prevChapterTitle, jumpDiary,
+        helpOpen,
       };
     },
     template: `
 <div>
+  <!-- ambient viewport reading progress track -->
+  <div class="reading-progress-track"><div class="reading-progress-fill" :style="{width: scrollPct + '%'}"></div></div>
+
   <!-- progress bar -->
   <div class="reader-progress"><div></div></div>
 
@@ -771,8 +847,9 @@
       <button @click="toggleOrig" :class="{on: showOrig}" title="Show original text under translation">雙語</button>
     </div>
     <div class="tool-group">
-      <button @click="settingsOpen = !settingsOpen" :class="{on: settingsOpen}" title="Reading settings"><svg class="ic"><use href="#i-settings"/></svg></button>
+      <button @click="settingsOpen = !settingsOpen" :class="{on: settingsOpen}" title="Reading settings (S)"><svg class="ic"><use href="#i-settings"/></svg></button>
       <button @click="toggleFocus" :class="{on: focusMode}" title="Focus mode (F)"><svg class="ic"><use href="#i-expand"/></svg></button>
+      <button @click="helpOpen = true" title="Keyboard shortcuts (?)">?</button>
     </div>
   </div>
 
@@ -845,7 +922,7 @@
     <div v-if="busy==='fetching'" class="banner"><span class="spinner"></span>Fetching chapter content…</div>
 
     <!-- busy translate -->
-    <div v-if="busy==='translating'" class="banner"><span class="spinner"></span><strong>Translating…</strong> can take up to a minute — this page updates automatically.</div>
+    <div v-if="busy==='translating'" class="banner"><span class="spinner"></span><strong>Translating…</strong> streaming paragraphs in real time…</div>
 
     <!-- content -->
     <div v-if="hasOriginal">
@@ -998,6 +1075,28 @@
       </template>
     </div>
   </aside>
+
+  <!-- Keyboard Shortcuts Modal -->
+  <div v-if="helpOpen" class="modal-overlay" @click.self="helpOpen = false">
+    <div class="modal-card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px">
+        <h3 style="font-size:15px; font-weight:700">⌨️ Keyboard Shortcuts</h3>
+        <button class="btn ghost tiny" @click="helpOpen = false">✕</button>
+      </div>
+      <div class="shortcut-grid">
+        <div class="sc-item"><span>Next Chapter</span><div><kbd class="sc-key">→</kbd> <kbd class="sc-key">N</kbd></div></div>
+        <div class="sc-item"><span>Prev Chapter</span><div><kbd class="sc-key">←</kbd> <kbd class="sc-key">P</kbd></div></div>
+        <div class="sc-item"><span>Scroll Down</span><div><kbd class="sc-key">J</kbd> <kbd class="sc-key">↓</kbd></div></div>
+        <div class="sc-item"><span>Scroll Up</span><div><kbd class="sc-key">K</kbd> <kbd class="sc-key">↑</kbd></div></div>
+        <div class="sc-item"><span>Focus Mode</span><kbd class="sc-key">F</kbd></div>
+        <div class="sc-item"><span>Table of Contents</span><kbd class="sc-key">T</kbd></div>
+        <div class="sc-item"><span>Bookmarks Drawer</span><kbd class="sc-key">B</kbd></div>
+        <div class="sc-item"><span>Reader Settings</span><kbd class="sc-key">S</kbd></div>
+        <div class="sc-item"><span>Close Menus</span><kbd class="sc-key">Esc</kbd></div>
+        <div class="sc-item"><span>Shortcut Guide</span><kbd class="sc-key">?</kbd></div>
+      </div>
+    </div>
+  </div>
 </div>`,
     methods: {
       jumpTo(e) {

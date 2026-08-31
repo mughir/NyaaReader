@@ -3,7 +3,7 @@ FastAPI Backend for NyaaReader
 """
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Query, UploadFile, File, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from pydantic import BaseModel, HttpUrl, computed_field
@@ -1862,35 +1862,93 @@ async def set_reading_status(novel_id: int, payload: dict, db: Session = Depends
 @app.post("/api/novels/{novel_id}/search")
 async def search_novel(novel_id: int, payload: dict, db: Session = Depends(get_db_session)):
     """Full-text search across translated chapter content. Returns matching chapters
-    with a snippet around the first hit."""
+    with BM25 ranking and highlighted contextual snippets."""
+    from sqlalchemy import text as sa_text
     q = (payload.get("q") or "").strip()
     if len(q) < 2:
         return {"results": []}
     novel = db.query(Novel).filter(Novel.id == novel_id).first()
     if not novel:
         raise HTTPException(status_code=404, detail="Novel not found")
-    chapters = (db.query(Chapter)
-                .filter(Chapter.novel_id == novel_id,
-                        Chapter.translated_content.contains(q, autoescape=True))
-                .order_by(Chapter.chapter_number)
-                .limit(30).all())
+
     results = []
-    for ch in chapters:
-        text = ch.translated_content or ""
-        idx = text.lower().find(q.lower())
-        if idx < 0:
-            idx = text.find(q)
-        if idx < 0:
-            idx = 0   # SQL matched but Python didn't (case folding) — show the head
-        start = max(0, idx - 80)
-        end = min(len(text), idx + len(q) + 160)
-        snippet = ("…" if start > 0 else "") + text[start:end] + ("…" if end < len(text) else "")
-        results.append({
-            "chapter_number": ch.chapter_number,
-            "title": ch.title_translated or ch.title or f"Chapter {ch.chapter_number}",
-            "snippet": snippet,
-            "count": text.lower().count(q.lower()),
-        })
+    fts_success = False
+
+    # 1. Try SQLite FTS5 query with BM25 ranking and snippet highlighting
+    try:
+        clean_terms = re.findall(r'[\w\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]+', q)
+        if clean_terms:
+            fts_query = " ".join(f'"{t}"' for t in clean_terms)
+            sql = sa_text("""
+                SELECT 
+                    chapter_number,
+                    title_translated,
+                    snippet(chapters_fts, 4, '<mark class="search-hl">', '</mark>', '…', 24) AS snippet_text,
+                    translated_content,
+                    bm25(chapters_fts) AS rank
+                FROM chapters_fts
+                WHERE novel_id = :novel_id AND chapters_fts MATCH :fts_query
+                ORDER BY rank
+                LIMIT 50
+            """)
+            rows = db.execute(sql, {"novel_id": novel_id, "fts_query": fts_query}).fetchall()
+            if rows:
+                for row in rows:
+                    ch_num = row[0]
+                    title = row[1] or f"Chapter {ch_num}"
+                    snippet = row[2] or ""
+                    content = row[3] or ""
+                    # Exact verification when query has punctuation or symbols (e.g. HP%)
+                    if q.lower() not in content.lower() and q.lower() not in title.lower():
+                        continue
+                    cnt = content.lower().count(q.lower())
+                    if '<mark' not in snippet or q.lower() not in snippet.lower():
+                        idx = content.lower().find(q.lower())
+                        start = max(0, idx - 80)
+                        end = min(len(content), idx + len(q) + 160)
+                        raw = content[start:end]
+                        pattern = re.compile(re.escape(q), re.IGNORECASE)
+                        hl = pattern.sub(r'<mark class="search-hl">\g<0></mark>', raw)
+                        snippet = ("…" if start > 0 else "") + hl + ("…" if end < len(content) else "")
+                    results.append({
+                        "chapter_number": ch_num,
+                        "title": title,
+                        "snippet": snippet,
+                        "count": max(1, cnt),
+                    })
+                if results:
+                    fts_success = True
+    except Exception as e:
+        logger.debug(f"FTS5 search fallback: {e}")
+        fts_success = False
+
+    # 2. Fallback to SQL LIKE if FTS5 had no results or threw an error
+    if not fts_success and not results:
+        chapters = (db.query(Chapter)
+                    .filter(Chapter.novel_id == novel_id,
+                            Chapter.translated_content.contains(q, autoescape=True))
+                    .order_by(Chapter.chapter_number)
+                    .limit(50).all())
+        for ch in chapters:
+            text_str = ch.translated_content or ""
+            idx = text_str.lower().find(q.lower())
+            if idx < 0:
+                idx = text_str.find(q)
+            if idx < 0:
+                idx = 0
+            start = max(0, idx - 80)
+            end = min(len(text_str), idx + len(q) + 160)
+            raw_snippet = text_str[start:end]
+            pattern = re.compile(re.escape(q), re.IGNORECASE)
+            hl_snippet = pattern.sub(r'<mark class="search-hl">\g<0></mark>', raw_snippet)
+            snippet = ("…" if start > 0 else "") + hl_snippet + ("…" if end < len(text_str) else "")
+            results.append({
+                "chapter_number": ch.chapter_number,
+                "title": ch.title_translated or ch.title or f"Chapter {ch.chapter_number}",
+                "snippet": snippet,
+                "count": text_str.lower().count(q.lower()),
+            })
+
     return {"results": results}
 
 
@@ -3624,6 +3682,17 @@ def _page(title: str, body: str, page_js: Optional[str] = None,
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<script>
+(function() {{
+  try {{
+    var raw = localStorage.getItem("novelreader.prefs");
+    if (raw) {{
+      var p = JSON.parse(raw);
+      if (p && p.theme) document.documentElement.setAttribute("data-theme", p.theme);
+    }}
+  }} catch(e) {{}}
+}})();
+</script>
 <link rel="stylesheet" href="/static/styles.css?v={stamp}">
 </head>
 <body>
@@ -3824,6 +3893,162 @@ async def translate_chapter_start(
         return {"status": "already_translated"}
     background_tasks.add_task(_translate_chapter_bg, novel_id, chapter_number, "balanced")
     return {"status": "started"}
+
+
+@app.get("/api/novels/{novel_id}/chapters/{chapter_number}/translate/stream")
+async def translate_chapter_stream(
+    novel_id: int,
+    chapter_number: int,
+    force: bool = False,
+    request: Request = None,
+    db: Session = Depends(get_db_session),
+):
+    """Progressive SSE streaming translation for chapter reading."""
+    import queue
+    import threading
+    if _auth_enabled(db):
+        cookie = request.cookies.get(_COOKIE_NAME) if request else None
+        if not cookie or not _verify_session(cookie):
+            raise HTTPException(status_code=401, detail="Login required")
+
+    chapter = db.query(Chapter).filter(
+        Chapter.novel_id == novel_id,
+        Chapter.chapter_number == chapter_number,
+    ).first()
+    if not chapter or not chapter.original_content:
+        raise HTTPException(status_code=400, detail="Chapter content not fetched yet")
+
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    if not novel:
+        raise HTTPException(status_code=404, detail="Novel not found")
+
+    async def event_generator():
+        if chapter.is_translated and not force:
+            yield f"event: init\ndata: {json.dumps({'chapter_number': chapter_number, 'title': chapter.title_translated or chapter.title, 'cached': True})}\n\n"
+            yield f"event: delta\ndata: {json.dumps({'delta': chapter.translated_content})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'status': 'completed', 'translated_content': chapter.translated_content, 'title_translated': chapter.title_translated, 'cached': True})}\n\n"
+            return
+
+        yield f"event: init\ndata: {json.dumps({'chapter_number': chapter_number, 'title': chapter.title or f'Chapter {chapter_number}'})}\n\n"
+
+        from database import SessionLocal
+        stream_db = SessionLocal()
+        try:
+            mem_row = stream_db.query(NovelMemory).filter(NovelMemory.novel_id == novel_id).first()
+            if not mem_row:
+                mem_row = NovelMemory(novel_id=novel_id)
+                stream_db.add(mem_row)
+                stream_db.flush()
+
+            memory = MemoryContext(
+                general_instruction=mem_row.general_instruction or "",
+                characters=mem_row.characters or "",
+                terms=mem_row.terms or "",
+                plot=mem_row.plot or "",
+                arc_plot=mem_row.arc_plot or "",
+                chapter_plot=mem_row.chapter_plot or "",
+                memory=mem_row.memory or "",
+                glossary_entries=_load_glossary(mem_row),
+            )
+
+            translator = get_translator()
+            if translator is None:
+                yield f"event: error\ndata: {json.dumps({'error': 'Translator not configured'})}\n\n"
+                return
+
+            q = queue.Queue()
+
+            def _stream_worker():
+                try:
+                    gen = translator.translate_with_memory_stream(
+                        chapter.original_content,
+                        source_lang=novel.original_language or "zh",
+                        target_lang=novel.target_language or "en",
+                        quality="balanced",
+                        memory=memory,
+                    )
+                    for chunk in gen:
+                        q.put(chunk)
+                except Exception as ex:
+                    q.put(ex)
+                finally:
+                    q.put(None)
+
+            thread = threading.Thread(target=_stream_worker, daemon=True)
+            thread.start()
+
+            full_text = ""
+            final_result = None
+
+            while True:
+                try:
+                    item = q.get_nowait()
+                except queue.Empty:
+                    await asyncio.sleep(0.04)
+                    continue
+
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    yield f"event: error\ndata: {json.dumps({'error': str(item)})}\n\n"
+                    return
+
+                if not getattr(item, "is_final", False):
+                    delta_text = getattr(item, "delta", "")
+                    if delta_text:
+                        full_text += delta_text
+                        yield f"event: delta\ndata: {json.dumps({'delta': delta_text})}\n\n"
+                else:
+                    final_result = getattr(item, "result", None)
+
+            if final_result and final_result.success:
+                ch_obj = stream_db.query(Chapter).filter(
+                    Chapter.novel_id == novel_id,
+                    Chapter.chapter_number == chapter_number,
+                ).first()
+                if ch_obj:
+                    ch_obj.translated_content = final_result.translated_text
+                    ch_obj.translated_word_count = len(final_result.translated_text.split())
+                    ch_obj.is_translated = True
+                    ch_obj.translation_model = final_result.model_used
+                    ch_obj.last_error = ""
+                    ch_obj.updated_at = datetime.utcnow()
+
+                    if ch_obj.title and not ch_obj.title_translated:
+                        try:
+                            ch_obj.title_translated = translator.translate_short(
+                                ch_obj.title, novel.original_language or "zh", novel.target_language or "en"
+                            )
+                        except Exception:
+                            ch_obj.title_translated = ch_obj.title
+
+                    if final_result.memory:
+                        m = final_result.memory
+                        mem_row.characters = m.characters or ""
+                        mem_row.terms = m.terms or ""
+                        mem_row.plot = m.plot or ""
+                        mem_row.arc_plot = m.arc_plot or ""
+                        mem_row.chapter_plot = m.chapter_plot or ""
+                        mem_row.memory = m.memory or ""
+                        mem_row.glossary_entries = _dump_glossary(m.glossary_entries)
+
+                    stream_db.commit()
+                    yield f"event: done\ndata: {json.dumps({'status': 'completed', 'translated_content': final_result.translated_text, 'title_translated': ch_obj.title_translated})}\n\n"
+            else:
+                err = (final_result.error if final_result else "Translation failed")
+                yield f"event: error\ndata: {json.dumps({'error': err})}\n\n"
+        finally:
+            stream_db.close()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 
 @app.post("/api/novels/{novel_id}/chapters/{chapter_number}/fetch")

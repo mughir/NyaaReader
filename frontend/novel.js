@@ -159,8 +159,21 @@
         const el = document.getElementById("pageJumpInput");
         if (el) { const v = el.value; if (v) { goToPage(v); el.value = ""; } }
       }
-      // Reset to page 1 when search/filter changes
-      watch([q, filter], () => { listPage.value = 1; syncPageUrl(1); });
+      // Reset to page 1 when search/filter changes & debounce in-text search
+      let searchDebounce = null;
+      watch([q, filter], ([newQ]) => {
+        listPage.value = 1;
+        syncPageUrl(1);
+        if (searchMode.value === "content") {
+          clearTimeout(searchDebounce);
+          if (!newQ || !newQ.trim()) {
+            contentResults.value = [];
+            contentSearched.value = false;
+          } else {
+            searchDebounce = setTimeout(searchContent, 300);
+          }
+        }
+      });
 
       // If the URL asked for a page beyond the real range (stale link, fewer
       // chapters now), clamp to the last page and fix the URL once.
@@ -614,16 +627,16 @@
     template: `
 <div>
   <header class="topbar">
-   <div class="container">
-     <a class="brand" href="/"><span class="logo-mark"><svg class="ic ic-lg"><use href="#i-cat"/></svg></span> NyaaReader</a>
-     <span class="flex-spacer"></span>
-     <nav class="topnav">
+    <div class="container">
+      <a class="brand" href="/"><span class="logo-mark"><svg class="ic ic-lg"><use href="#i-cat"/></svg></span> NyaaReader</a>
+      <span class="crumb">{{ novel.title_translated || novel.title }}</span>
+      <span class="flex-spacer"></span>
+      <nav class="topnav">
         <a class="nav-link" href="/"><svg class="ic"><use href="#i-home"/></svg><span class="nav-label">Library</span></a>
-        <a class="nav-link active" href="/dashboard"><svg class="ic"><use href="#i-sparkle"/></svg><span class="nav-label">Dashboard</span></a>
+        <a class="nav-link" href="/dashboard"><svg class="ic"><use href="#i-sparkle"/></svg><span class="nav-label">Dashboard</span></a>
         <a class="nav-link" href="/config"><svg class="ic"><use href="#i-settings"/></svg><span class="nav-label">Settings</span></a>
-     </nav>
-     <span class="crumb">{{ novel.title_translated || novel.title }}</span>
-   </div>
+      </nav>
+    </div>
   </header>
 
   <div class="container">
@@ -811,7 +824,7 @@
       <a v-for="r in contentResults" :key="r.chapter_number" class="search-hit"
          :href="'/novel/' + novel.id + '/chapter/' + r.chapter_number">
         <span class="hit-title">Ch {{ r.chapter_number }} · {{ r.title }} <span class="hit-count">({{ r.count }}×)</span></span>
-        <span class="hit-snippet">{{ r.snippet }}</span>
+        <span class="hit-snippet" v-html="r.snippet"></span>
       </a>
     </div>
 
