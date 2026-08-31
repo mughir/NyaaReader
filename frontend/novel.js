@@ -605,6 +605,85 @@
         } catch (e) { /* quiet — the visible button covers this case */ }
       }
 
+      // -------- Chapter Range Multi-Select & Batch Actions --------
+      const selectMode = ref(false);
+      const selectedChapters = ref([]);
+      const lastSelectedIdx = ref(null);
+
+      function toggleSelectMode() {
+        selectMode.value = !selectMode.value;
+        if (!selectMode.value) selectedChapters.value = [];
+        lastSelectedIdx.value = null;
+      }
+
+      function isSelected(chNum) {
+        return selectedChapters.value.includes(chNum);
+      }
+
+      function toggleChapterSelect(chNum, idx, ev) {
+        if (ev && ev.shiftKey && lastSelectedIdx.value !== null) {
+          const start = Math.min(lastSelectedIdx.value, idx);
+          const end = Math.max(lastSelectedIdx.value, idx);
+          const range = visible.value.slice(start, end + 1).map(c => c.chapter_number);
+          const set = new Set(selectedChapters.value);
+          range.forEach(n => set.add(n));
+          selectedChapters.value = Array.from(set);
+        } else {
+          const idxInSel = selectedChapters.value.indexOf(chNum);
+          if (idxInSel >= 0) selectedChapters.value.splice(idxInSel, 1);
+          else selectedChapters.value.push(chNum);
+        }
+        lastSelectedIdx.value = idx;
+      }
+
+      function selectAllVisible() {
+        const set = new Set(selectedChapters.value);
+        visible.value.forEach(c => set.add(c.chapter_number));
+        selectedChapters.value = Array.from(set);
+      }
+
+      function clearSelection() {
+        selectedChapters.value = [];
+        lastSelectedIdx.value = null;
+      }
+
+      async function batchTranslateSelected() {
+        if (!selectedChapters.value.length) return;
+        const list = selectedChapters.value.slice().sort((a, b) => a - b);
+        try {
+          const res = await fetch(`/api/novels/${novel.value.id}/batch-translate-selected`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chapters: list }),
+          });
+          if (res.ok) {
+            note.value = `Translating ${list.length} selected chapters in background…`;
+            clearSelection();
+            selectMode.value = false;
+            pollBatch();
+          }
+        } catch (e) { error.value = "Batch translate failed: " + e.message; }
+      }
+
+      async function batchMarkRead(isRead) {
+        if (!selectedChapters.value.length) return;
+        const list = selectedChapters.value.slice();
+        try {
+          const res = await fetch(`/api/novels/${novel.value.id}/batch-mark-read`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chapters: list, is_read: isRead }),
+          });
+          if (res.ok) {
+            chapters.value.forEach(c => {
+              if (list.includes(c.chapter_number)) c.is_read = isRead;
+            });
+            note.value = `Marked ${list.length} chapters as ${isRead ? 'read' : 'unread'} ✓`;
+            clearSelection();
+          }
+        } catch (e) { error.value = "Batch mark failed: " + e.message; }
+      }
+
       return { novel, chapters, q, filter, fetching, deleting, error, note, hasContent,
                translatedCount, visible, filtered, fetchMore, deleteNovel, ensureMetaTranslated,
                searchMode, contentResults, contentSearching, contentSearched,
@@ -621,7 +700,9 @@
                translatingAll, checking, shelfStatus, shelfLabel, shelfIcon,
                gloss, memSections, toggleMemory, saveMemory, retranslate, translateTitles,
                translateAll, checkUpdates, setShelf,
-               addChar, addTerm, removeEntry, batch, pollBatch };
+               addChar, addTerm, removeEntry, batch, pollBatch,
+               selectMode, selectedChapters, toggleSelectMode, isSelected, toggleChapterSelect,
+               selectAllVisible, clearSelection, batchTranslateSelected, batchMarkRead };
     },
     mounted() {
       this.ensureMetaTranslated();
@@ -811,6 +892,9 @@
           <button :class="{on: searchMode==='titles'}" @click="setSearchMode('titles')">Titles</button>
           <button :class="{on: searchMode==='content'}" @click="setSearchMode('content')"><svg class="ic"><use href="#i-search"/></svg> In-text</button>
         </div>
+        <button class="btn ghost small" :class="{on: selectMode}" @click="toggleSelectMode" title="Multi-select chapters for batch actions">☑ Select</button>
+        <button v-if="selectMode" class="btn ghost small" @click="selectAllVisible">Select Page</button>
+        <button v-if="selectMode && selectedChapters.length" class="btn ghost small" @click="clearSelection">Clear</button>
         <span class="tb-spacer"></span>
         <div class="tool-group">
           <button :class="{on: filter==='all'}" @click="filter='all'">All</button>
@@ -856,17 +940,40 @@
     </div>
 
     <div v-if="visible.length" class="chapter-list">
-      <a v-for="c in visible" :key="c.id" class="chapter-item"
-         :href="'/novel/' + novel.id + '/chapter/' + c.chapter_number">
-        <span class="read-dot" :class="{read: c.is_read}" :title="c.is_read ? 'Read' : 'Not read yet'"></span>
-        <span class="num">{{ c.chapter_number }}</span>
-        <span class="ttl">
-          <span v-if="c.title_translated">{{ c.title_translated }}</span>
-          <span v-else>{{ c.title || ('Chapter ' + c.chapter_number) }}</span>
-        </span>
-        <span v-if="c.is_translated" class="st done" title="Translated">✓</span>
-        <span v-else-if="hasContent(c)" class="st fetched" title="Fetched, not translated">EN</span>
-        <span v-else class="st missing" title="Not fetched yet">⛁</span>      </a>
+      <div v-for="(c, i) in visible" :key="c.id" class="chapter-item"
+           :class="{'item-selected': isSelected(c.chapter_number)}"
+           :style="selectMode ? 'cursor:pointer' : ''"
+           @click="selectMode ? toggleChapterSelect(c.chapter_number, i, $event) : null">
+        <input v-if="selectMode" type="checkbox" :checked="isSelected(c.chapter_number)"
+               @click.stop="toggleChapterSelect(c.chapter_number, i, $event)" class="ch-checkbox">
+        <a :href="selectMode ? null : ('/novel/' + novel.id + '/chapter/' + c.chapter_number)"
+           style="display:flex;align-items:center;gap:12px;flex:1;color:inherit;text-decoration:none">
+          <span class="read-dot" :class="{read: c.is_read}" :title="c.is_read ? 'Read' : 'Not read yet'"></span>
+          <span class="num">{{ c.chapter_number }}</span>
+          <span class="ttl">
+            <span v-if="c.title_translated">{{ c.title_translated }}</span>
+            <span v-else>{{ c.title || ('Chapter ' + c.chapter_number) }}</span>
+          </span>
+          <span v-if="c.is_translated" class="st done" title="Translated">✓</span>
+          <span v-else-if="hasContent(c)" class="st fetched" title="Fetched, not translated">EN</span>
+          <span v-else class="st missing" title="Not fetched yet">⛁</span>
+        </a>
+      </div>
+    </div>
+
+    <!-- Floating Batch Action Bar -->
+    <div v-if="selectedChapters.length" class="batch-bar">
+      <div class="batch-bar-count">
+        <span>Selected <strong>{{ selectedChapters.length }}</strong> ch</span>
+        <span class="muted" style="font-size:11px">(Shift+Click for range)</span>
+      </div>
+      <div class="batch-bar-btns">
+        <button class="btn small" @click="batchTranslateSelected">⚡ Translate ({{ selectedChapters.length }})</button>
+        <button class="btn ghost small" @click="batchMarkRead(true)">📖 Read</button>
+        <button class="btn ghost small" @click="batchMarkRead(false)">Unread</button>
+        <button class="btn ghost small" @click="clearSelection">✕</button>
+      </div>
+    </div>
     </div>
     <div v-else class="empty-state">
       <div class="empty-emoji">{{ q ? '🔍' : '📄' }}</div>

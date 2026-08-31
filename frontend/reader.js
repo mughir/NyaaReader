@@ -64,21 +64,54 @@
       });
       const titleTranslated = ref(DATA.title_translated || "");
       const novelTitleTranslated = ref(DATA.novel_title_translated || "");
-
-      const theme = ref(prefs.theme);
-      const fontSize = ref(prefs.font);
-      const lineHeight = ref(prefs.line);
+      const theme = ref(prefs.theme || "light");
+      const fontSize = ref(prefs.font || 18);
+      const lineHeight = ref(prefs.line || 1.8);
+      const paraMargin = ref(prefs.paraMargin || "1.2em");
       const showOrig = ref(prefs.showOrig);
-      const fontFamily = ref(prefs.fontFamily || "serif");
+      const fontFamily = ref(prefs.fontFamily || "literata");
       const readerWidth = ref(prefs.width || 780);
       const focusMode = ref(prefs.focus || false);
       const autoFetch = ref(prefs.autoFetch !== false);
+      const entityTooltips = ref(prefs.entityTooltips !== false);
       const settingsOpen = ref(false);
       const busy = ref("");          // '', 'fetching', 'translating'
       const error = ref("");
       const pollTimer = ref(null);
       const ahead = ref({ running: false, done: 0, total: 0, label: "", kind: null });
       const stoppingAhead = ref(false);
+
+      // In-reader FTS Search Drawer
+      const searchOpen = ref(false);
+      const searchQuery = ref("");
+      const searchResults = ref([]);
+      const searching = ref(false);
+      let searchDebounce = null;
+
+      watch(searchQuery, (q) => {
+        if (searchDebounce) clearTimeout(searchDebounce);
+        if (!q.trim()) { searchResults.value = []; return; }
+        searchDebounce = setTimeout(async () => {
+          searching.value = true;
+          try {
+            const res = await fetch(`/api/novels/${novelId}/search`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ query: q.trim(), in_text: true }),
+            });
+            if (res.ok) {
+              const d = await res.json();
+              searchResults.value = d.matches || [];
+            }
+          } catch (e) {}
+          finally { searching.value = false; }
+        }, 280);
+      });
+
+      // In-Text Living Glossary Dossier Pop
+      const entityPop = ref({ show: false, name: "", src: "", role: "", locked: false, x: 0, y: 0 });
+      function hideEntityPop() { entityPop.value.show = false; }
+
       async function stopAhead() {
         if (stoppingAhead.value) return;
         stoppingAhead.value = true;
@@ -147,13 +180,16 @@
       const { splitParagraphs, stripTitleEcho } = window.NyaaText;
 
       const paragraphs = computed(() => {
-        const list = splitParagraphs(displayText.value);
-        return stripTitleEcho(list, DATA.title_translated || DATA.title || "");
+        const t = displayText.value || "";
+        return t.split("\n").map(p => p.trim()).filter(Boolean);
       });
 
       // Original text, split by the same rule so the bilingual hover maps
       // between two lists built the same way.
-      const originalParas = computed(() => splitParagraphs(original.value));
+      const originalParas = computed(() => {
+        const t = original.value || "";
+        return t.split("\n").map(p => p.trim()).filter(Boolean);
+      });
 
       // ---- per-paragraph bilingual alignment (UI 1) ----
       const hoverPara = ref(-1);       // index of translated paragraph being hovered
@@ -163,24 +199,15 @@
       // each paragraph's cumulative character position within its text — the original
       // paragraph whose center is at the same text fraction as the hovered one.
       const origCenters = computed(() => {
-        const paras = originalParas.value;
-        if (!paras.length) return [];
-        const total = paras.reduce((s, p) => s + p.length, 0) || 1;
-        let acc = 0;
-        return paras.map(p => {
-          const center = (acc + p.length / 2) / total;
-          acc += p.length;
-          return center;
-        });
+        const N = originalParas.value.length;
+        if (N === 0) return [];
+        return originalParas.value.map((_, j) => (j + 0.5) / N);
       });
       const hoverOriginal = computed(() => {
-        if (hoverPara.value < 0) return "";
-        const m = paragraphs.value.length;
-        if (!m) return "";
-        const total = paragraphs.value.reduce((s, p) => s + p.length, 0) || 1;
-        let acc = 0;
-        for (let i = 0; i < hoverPara.value; i++) acc += paragraphs.value[i].length;
-        const target = (acc + paragraphs.value[hoverPara.value].length / 2) / total;
+        if (hoverPara.value < 0 || !originalParas.value.length) return "";
+        const M = paragraphs.value.length;
+        if (M === 0) return "";
+        const target = (hoverPara.value + 0.5) / M;
         // nearest original paragraph center
         const centers = origCenters.value;
         let best = 0, bestDist = Infinity;
@@ -200,7 +227,7 @@
       function hideHover() { hoverPara.value = -1; }
 
       // Auto-scroll TOC drawer to current chapter when opened
-      Vue.watch(tocOpen, (open) => {
+      watch(tocOpen, (open) => {
         if (open) {
           Vue.nextTick(() => {
             const cur = document.querySelector(".toc-item.cur");
@@ -230,12 +257,36 @@
       function onParaOut() { paraEl = null; hideHover(); }
 
       function setTheme(t) {
-        theme.value = t; prefs.theme = t; savePrefs();
+        theme.value = t;
+        prefs.theme = t;
+        savePrefs();
         document.documentElement.setAttribute("data-theme", t);
       }
+      function setFontFamily(f) {
+        fontFamily.value = f;
+        prefs.fontFamily = f;
+        savePrefs();
+        document.documentElement.setAttribute("data-font", f);
+      }
+      function setLineHeight(h) {
+        lineHeight.value = h;
+        prefs.line = h;
+        savePrefs();
+      }
+      function setParaMargin(m) {
+        paraMargin.value = m;
+        prefs.paraMargin = m;
+        savePrefs();
+      }
+      function setWidth(w) {
+        readerWidth.value = w;
+        prefs.width = w;
+        savePrefs();
+      }
       function bumpFont(d) {
-        fontSize.value = Math.min(26, Math.max(13, fontSize.value + d));
-        prefs.font = fontSize.value; savePrefs();
+        fontSize.value = Math.max(12, Math.min(32, fontSize.value + d));
+        prefs.font = fontSize.value;
+        savePrefs();
       }
       function bumpLine(d) {
         lineHeight.value = Math.min(2.4, Math.max(1.3, +(lineHeight.value + d).toFixed(2)));
@@ -523,9 +574,10 @@
         else if (e.key.toLowerCase() === "t") { tocOpen.value = !tocOpen.value; }
         else if (e.key.toLowerCase() === "b") { toggleBookmarks(); }
         else if (e.key.toLowerCase() === "s") { settingsOpen.value = !settingsOpen.value; }
-        else if (e.key === "?" || e.key === "/") { helpOpen.value = !helpOpen.value; }
+        else if (e.key === "/") { e.preventDefault(); searchOpen.value = !searchOpen.value; }
+        else if (e.key === "?") { helpOpen.value = !helpOpen.value; }
         else if (e.key === "Escape") {
-          helpOpen.value = false; tocOpen.value = false; settingsOpen.value = false; memOpen.value = false; bmOpen.value = false;
+          helpOpen.value = false; tocOpen.value = false; searchOpen.value = false; settingsOpen.value = false; memOpen.value = false; bmOpen.value = false;
           if (focusMode.value) { focusMode.value = false; prefs.focus = false; savePrefs(); document.body.classList.remove("reader-focus"); }
         }
         else if (e.key === "f") { toggleFocus(); }
@@ -799,16 +851,18 @@
       });
 
       return {
-        state, theme, fontSize, lineHeight, showOrig, busy, error,
+        state, theme, fontSize, lineHeight, paraMargin, showOrig, busy, error,
         translated, original, isTranslated, hasOriginal, displayText, paragraphs, originalParas,
         hoverPara, hoverPos, hoverOriginal, showHover, hideHover, onParaOver, onParaOut,
         bmOpen, bmList, bmSel, bmNote, bmSaving, selPop,
         titleTranslated, novelTitleTranslated, ahead, stoppingAhead, stopAhead, aheadLabel, KIND_LABEL,
         tocOpen, tocQuery, tocList, tocFiltered, tocJump,
+        searchOpen, searchQuery, searchResults, searching,
+        entityPop, hideEntityPop, entityTooltips,
         memOpen, memLoading, memSaving, memSaved, memError, gloss,
         fontFamily, readerWidth, focusMode, settingsOpen, autoFetch,
         chapterNumber, total, novelId, DATA,
-        setTheme, bumpFont, bumpLine, toggleOrig, fetchContent, refetchConfirm, translate,
+        setTheme, bumpFont, bumpLine, setLineHeight, setParaMargin, toggleOrig, fetchContent, refetchConfirm, translate,
         setFontFamily, setWidth, toggleFocus, toggleAutoFetch,
         toggleMem, addChar, addTerm, removeEntry, saveMemory,
         toggleBookmarks, saveBookmark, removeBookmark, hideSelPop,
@@ -833,10 +887,10 @@
   <!-- toolbar -->
   <div class="reader-toolbar">
     <div class="tool-group tg-nav">
-      <button @click="tocOpen = true" title="Chapter list"><svg class="ic"><use href="#i-menu"/></svg></button>
+      <button @click="tocOpen = true" title="Chapter list (T)"><svg class="ic"><use href="#i-menu"/></svg></button>
       <a :href="'/novel/' + novelId" title="Back to chapter list"><svg class="ic"><use href="#i-book"/></svg><span class="nav-label">Chapters</span></a>
-      <a v-if="chapterNumber > 1" :href="'/novel/' + novelId + '/chapter/' + (chapterNumber-1)" title="Previous chapter (←)">←</a>
-      <a v-if="chapterNumber < total" :href="'/novel/' + novelId + '/chapter/' + (chapterNumber+1)" title="Next chapter (→)">→</a>
+      <a v-if="chapterNumber > 1" :href="'/novel/' + novelId + '/chapter/' + (chapterNumber-1)" title="Previous chapter (←/P)">←</a>
+      <a v-if="chapterNumber < total" :href="'/novel/' + novelId + '/chapter/' + (chapterNumber+1)" title="Next chapter (→/N)">→</a>
     </div>
     <div class="ttl"><strong>{{ novelTitleTranslated || DATA.novel_title }}</strong> · Ch {{ chapterNumber }}/{{ total }}</div>
     <button v-if="!isTranslated && hasOriginal" class="btn small" @click="translate"
@@ -855,9 +909,11 @@
       <button @click="setTheme('light')" :class="{on: theme==='light'}" title="Light theme"><svg class="ic"><use href="#i-sun"/></svg><span class="tg-label">Light</span></button>
       <button @click="setTheme('sepia')" :class="{on: theme==='sepia'}" title="Sepia theme"><svg class="ic"><use href="#i-book"/></svg><span class="tg-label">Sepia</span></button>
       <button @click="setTheme('dark')" :class="{on: theme==='dark'}" title="Dark theme"><svg class="ic"><use href="#i-moon"/></svg><span class="tg-label">Dark</span></button>
+      <button @click="setTheme('oled')" :class="{on: theme==='oled'}" title="OLED Midnight theme"><span style="font-size:11px;font-weight:700">OLED</span></button>
     </div>
     <div class="tool-group">
-      <button @click="toggleBookmarks" :class="{on: bmOpen}" title="Bookmarks & highlights"><svg class="ic"><use href="#i-bookmark"/></svg></button>
+      <button @click="searchOpen = !searchOpen" :class="{on: searchOpen}" title="Search novel (/)" style="font-size:13px">🔍</button>
+      <button @click="toggleBookmarks" :class="{on: bmOpen}" title="Bookmarks & highlights (B)"><svg class="ic"><use href="#i-bookmark"/></svg></button>
       <button @click="toggleMem" :class="{on: memOpen}" title="Edit glossary / memory"><svg class="ic"><use href="#i-chip"/></svg></button>
       <button @click="toggleOrig" :class="{on: showOrig}" title="Show original text under translation">雙語</button>
     </div>
@@ -874,9 +930,23 @@
   <!-- settings popover -->
   <div v-if="settingsOpen" class="settings-pop">
     <div class="sp-row"><label>Font</label>
+      <select :value="fontFamily" @change="setFontFamily($event.target.value)" style="height:30px;padding:0 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2);color:var(--text);font-size:12px">
+        <option value="literata">📖 Literata (Book Serif)</option>
+        <option value="lora">🏛️ Lora (Literary)</option>
+        <option value="atkinson">👓 Atkinson (Clear Sans)</option>
+        <option value="serif">Georgia (Classic)</option>
+        <option value="sans">System Sans</option>
+      </select>
+    </div>
+    <div class="sp-row"><label>Line Height</label>
+      <input type="range" min="1.4" max="2.4" step="0.1" :value="lineHeight" @input="setLineHeight(+$event.target.value)">
+      <span class="muted" style="font-size:11px">{{ lineHeight }}</span>
+    </div>
+    <div class="sp-row"><label>Spacing</label>
       <div class="tool-group">
-        <button :class="{on: fontFamily==='serif'}" @click="setFontFamily('serif')">Serif</button>
-        <button :class="{on: fontFamily==='sans'}" @click="setFontFamily('sans')">Sans</button>
+        <button :class="{on: paraMargin==='0.8em'}" @click="setParaMargin('0.8em')">Tight</button>
+        <button :class="{on: paraMargin==='1.2em'}" @click="setParaMargin('1.2em')">Normal</button>
+        <button :class="{on: paraMargin==='1.6em'}" @click="setParaMargin('1.6em')">Wide</button>
       </div>
     </div>
     <div class="sp-row"><label>Width</label>
@@ -885,12 +955,12 @@
     </div>
     <div class="sp-row"><label>Auto-fetch next</label>
       <button class="toggle" :class="{on: autoFetch}" @click="toggleAutoFetch" title="Prefetch & translate the next raw chapters while you read">{{ autoFetch ? 'On' : 'Off' }}</button>
-      <span class="muted" style="font-size:11px">only when next chapter is raw</span>
+      <span class="muted" style="font-size:11px">prefetch raw chapters</span>
     </div>
-    <div class="sp-row"><label>Shortcuts</label><span class="muted" style="font-size:11px">← → chapter · T translate · F focus · Esc close</span></div>
+    <div class="sp-row"><label>Shortcuts</label><span class="muted" style="font-size:11px">← → Ch · J/K Scroll · / Search · S Settings · ? Help</span></div>
   </div>
 
-  <main class="reader-main" :style="{ fontSize: fontSize + 'px', lineHeight: lineHeight, maxWidth: readerWidth + 'px' }">
+  <main class="reader-main" :style="{ fontSize: fontSize + 'px', lineHeight: lineHeight, maxWidth: readerWidth + 'px', '--read-pm': paraMargin }">
     <h1 class="chapter-title">{{ titleTranslated || DATA.title }}</h1>
 
     <!-- translate-ahead progress -->
@@ -1017,6 +1087,27 @@
         <span v-if="c.done" class="st done">✓</span>
       </a>
       <div v-if="tocFiltered.length === 0" class="muted" style="padding:12px">No chapters match.</div>
+    </div>
+  </aside>
+
+  <!-- in-reader FTS Search drawer -->
+  <div v-if="searchOpen" class="toc-overlay" @click.self="searchOpen = false"></div>
+  <aside class="search-drawer" :class="{open: searchOpen}">
+    <div class="search-head">
+      <strong>🔍 In-Novel Search</strong>
+      <button class="btn ghost small" @click="searchOpen = false">✕</button>
+    </div>
+    <div class="search-input-wrap">
+      <input type="search" v-model="searchQuery" placeholder="Search entire novel (FTS5)…" class="search-in" autofocus>
+    </div>
+    <div class="search-res-list">
+      <div v-if="searching" class="muted" style="padding:12px"><span class="spinner"></span> Searching…</div>
+      <div v-else-if="searchQuery && searchResults.length === 0" class="muted" style="padding:12px">No matches found.</div>
+      <a v-for="m in searchResults" :key="m.chapter_number" class="search-res-card"
+         :href="'/novel/' + novelId + '/chapter/' + m.chapter_number">
+        <div class="search-res-chap">Ch {{ m.chapter_number }} · {{ m.title_translated || m.title }}</div>
+        <div class="search-res-snippet" v-html="m.snippet || m.title"></div>
+      </a>
     </div>
   </aside>
 

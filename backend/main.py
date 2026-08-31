@@ -974,6 +974,104 @@ def translate_to_end_bg(novel_id: int):
         db.close()
 
 
+class BatchTranslateSelectedRequest(BaseModel):
+    chapters: List[int]
+
+
+class BatchMarkReadRequest(BaseModel):
+    chapters: List[int]
+    is_read: bool = True
+
+
+@app.post("/api/novels/{novel_id}/batch-translate-selected")
+async def batch_translate_selected(
+    novel_id: int,
+    req: BatchTranslateSelectedRequest,
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db_session),
+):
+    """Background: translate specific list of selected chapters sequentially."""
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    if not novel:
+        raise HTTPException(status_code=404, detail="Novel not found")
+    if not req.chapters:
+        return {"status": "none", "count": 0}
+    async with _async_novel_lock(novel_id):
+        if _batch_running(novel_id):
+            return {"status": "already_running", "count": 0}
+        background_tasks.add_task(_translate_selected_bg, novel_id, req.chapters)
+    return {"status": "started", "count": len(req.chapters)}
+
+
+def _translate_selected_bg(novel_id: int, chapter_numbers: List[int]):
+    """Fetch+translate a specified list of chapters sequentially."""
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        novel = db.query(Novel).filter(Novel.id == novel_id).first()
+        if not novel:
+            return
+        chapters = (db.query(Chapter)
+                    .filter(Chapter.novel_id == novel_id, Chapter.chapter_number.in_(chapter_numbers))
+                    .order_by(Chapter.chapter_number).all())
+        if not chapters:
+            return
+        if not _set_batch(novel_id, "translate-selected", len(chapters)):
+            return
+        done = 0
+        outcome = None
+        for ch in chapters:
+            if _batch_stop_requested(novel_id):
+                outcome = _stopped_label(done, len(chapters), "selected chapters translated")
+                break
+            try:
+                if not ch.original_content and ch.source_url:
+                    ch_data = _fetch_chapter_content_sync(ch.source_url)
+                    if ch_data and ch_data.content:
+                        ch.original_content = ch_data.content
+                        ch.word_count = getattr(ch_data, "word_count", None)
+                        db.commit()
+                db.refresh(ch)
+                if not ch.original_content:
+                    continue
+                _translate_chapter_bg(novel_id, ch.chapter_number, "balanced")
+                db.refresh(ch)
+                if ch.is_translated:
+                    done += 1
+                _bump_batch(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+            except RelayAuthError as e:
+                logger.error(f"translate-selected stopped: relay key rejected ({e})")
+                outcome = _auth_rejected_label(done, len(chapters), "selected chapters translated")
+                break
+            except Exception as e:
+                logger.warning(f"translate-selected ch{ch.chapter_number} failed: {e}")
+                db.rollback()
+        _finish_batch(novel_id, outcome or f"Translated {done}/{len(chapters)} selected chapters")
+    finally:
+        db.close()
+
+
+@app.post("/api/novels/{novel_id}/batch-mark-read")
+async def batch_mark_read(
+    novel_id: int,
+    req: BatchMarkReadRequest,
+    db: Session = Depends(get_db_session),
+):
+    """Mark a set of selected chapters as read or unread."""
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    if not novel:
+        raise HTTPException(status_code=404, detail="Novel not found")
+    if not req.chapters:
+        return {"status": "ok", "updated": 0}
+    now = datetime.utcnow() if req.is_read else None
+    updated = (db.query(Chapter)
+               .filter(Chapter.novel_id == novel_id, Chapter.chapter_number.in_(req.chapters))
+               .update({Chapter.is_read: req.is_read, Chapter.read_at: now}, synchronize_session="fetch"))
+    novel.read_chapters = db.query(Chapter).filter(Chapter.novel_id == novel_id, Chapter.is_read == True).count()
+    db.commit()
+    return {"status": "ok", "updated": updated}
+
+
 @app.post("/api/novels/{novel_id}/retranslate-match")
 async def retranslate_match(novel_id: int, payload: dict = None,
                             background_tasks: BackgroundTasks = None,
@@ -3694,6 +3792,9 @@ def _page(title: str, body: str, page_js: Optional[str] = None,
   }} catch(e) {{}}
 }})();
 </script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/styles.css?v={stamp}">
 </head>
 <body>

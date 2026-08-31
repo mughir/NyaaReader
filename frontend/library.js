@@ -3,7 +3,7 @@
    translated_chapters,read_chapters,reading_status,last_read}], window.__SHELF__ */
 (function () {
   const DATA = window.__LIBRARY__ || [];
-  const { createApp, ref } = Vue;
+  const { createApp, ref, computed, watch } = Vue;
 
   const SHELVES = [
     { key: "all", label: "All", icon: "i-book" },
@@ -17,13 +17,50 @@
     setup() {
       const novels = ref(DATA);
       const shelf = ref(window.__SHELF__ || "all");
+      const searchQuery = ref("");
+      const sortMode = ref(localStorage.getItem("novelreader.lib_sort") || "recent");
+      const viewMode = ref(localStorage.getItem("novelreader.lib_view") || "grid");
       const url = ref("");
       const lang = ref("en");
       const adding = ref(false);
       const error = ref("");
       const notice = ref("");
 
-      const shown = ref(novels.value); // server already filtered by shelf
+      watch(sortMode, (v) => localStorage.setItem("novelreader.lib_sort", v));
+      watch(viewMode, (v) => localStorage.setItem("novelreader.lib_view", v));
+
+      const filteredNovels = computed(() => {
+        let list = novels.value.slice();
+        if (shelf.value !== "all") {
+          list = list.filter(n => (n.reading_status || "ongoing") === shelf.value);
+        }
+        const q = searchQuery.value.trim().toLowerCase();
+        if (q) {
+          list = list.filter(n =>
+            (n.title_translated || "").toLowerCase().includes(q) ||
+            (n.title || "").toLowerCase().includes(q) ||
+            (n.author || "").toLowerCase().includes(q) ||
+            (n.source_site || "").toLowerCase().includes(q)
+          );
+        }
+
+        if (sortMode.value === "progress") {
+          list.sort((a, b) => pct(b) - pct(a));
+        } else if (sortMode.value === "chapters") {
+          list.sort((a, b) => (b.total_chapters || 0) - (a.total_chapters || 0));
+        } else if (sortMode.value === "title") {
+          list.sort((a, b) => (a.title_translated || a.title || "").localeCompare(b.title_translated || b.title || ""));
+        } else {
+          // "recent" (default): last_read first, then by id descending
+          list.sort((a, b) => {
+            const aTime = a.last_read && a.last_read.read_at ? new Date(a.last_read.read_at).getTime() : 0;
+            const bTime = b.last_read && b.last_read.read_at ? new Date(b.last_read.read_at).getTime() : 0;
+            if (bTime !== aTime) return bTime - aTime;
+            return b.id - a.id;
+          });
+        }
+        return list;
+      });
 
       function pct(n) {
         return n.total_chapters > 0 ? Math.round((n.translated_chapters / n.total_chapters) * 100) : 0;
@@ -34,10 +71,9 @@
       // Cover fallback: gradient + initial when no image
       function coverStyle(n) {
         if (n.cover_url) {
-        // Sanitize: a crafted cover_url with ')' or ';' could inject CSS.
-        const safe = String(n.cover_url).replace(/[\s'"();]/g, "");
-        return { backgroundImage: `url(${safe})`, backgroundSize: "cover", backgroundPosition: "center" };
-      }
+          const safe = String(n.cover_url).replace(/[\s'"();]/g, "");
+          return { backgroundImage: `url(${safe})`, backgroundSize: "cover", backgroundPosition: "center" };
+        }
         const hue = (n.id * 47) % 360;
         return {
           background: `linear-gradient(150deg, hsl(${hue},55%,42%), hsl(${(hue + 45) % 360},62%,26%) 65%, hsl(${(hue + 90) % 360},65%,18%))`,
@@ -58,7 +94,8 @@
       }
       function goShelf(key) {
         shelf.value = key;
-        window.location.href = key === "all" ? "/" : "/?shelf=" + key;
+        const newUrl = key === "all" ? "/" : "/?shelf=" + key;
+        window.history.pushState({}, "", newUrl);
       }
 
       async function addNovel() {
@@ -78,9 +115,6 @@
           const novel = await res.json();
           notice.value = `Added "${novel.title_translated || novel.title}" — fetching first chapters in background.`;
           url.value = "";
-          // Don't re-fetch /api/novels here — its rows lack translated_chapters/
-          // read_chapters/last_read, so replacing the cards wipes progress bars
-          // and drops the active shelf filter. We redirect in ~1s anyway.
           setTimeout(() => { window.location.href = "/novel/" + novel.id; }, 900);
         } catch (e) {
           error.value = e.message;
@@ -92,7 +126,7 @@
       function openNovel(id) { window.location.href = "/novel/" + id; }
       function openChapter(id, n) { window.location.href = `/novel/${id}/chapter/${n}`; }
 
-      return { novels, shown, shelf, SHELVES, url, lang, adding, error, notice,
+      return { novels, filteredNovels, shelf, searchQuery, sortMode, viewMode, SHELVES, url, lang, adding, error, notice,
                pct, readPct, coverStyle, coverText, shelfLabel, shelfIcon, goShelf,
                addNovel, openNovel, openChapter };
     },
@@ -126,16 +160,34 @@
     <div v-if="error" class="banner err" style="margin-top:12px">⚠ {{ error }}</div>
     <div v-if="notice" class="banner" style="margin-top:12px">✓ {{ notice }}</div>
 
-    <!-- shelf tabs -->
-    <div class="shelf-tabs">
-      <button v-for="s in SHELVES" :key="s.key" class="btn ghost small"
-              :class="{on: shelf === s.key}" @click="goShelf(s.key)">
-        <svg class="ic"><use :href="'#' + s.icon"/></svg> {{ s.label }}
-      </button>
+    <!-- shelf tabs & collection controls -->
+    <div class="library-toolbar">
+      <div class="shelf-tabs">
+        <button v-for="s in SHELVES" :key="s.key" class="btn ghost small"
+                :class="{on: shelf === s.key}" @click="goShelf(s.key)">
+          <svg class="ic"><use :href="'#' + s.icon"/></svg> {{ s.label }}
+        </button>
+      </div>
+      <div class="lib-filter-bar">
+        <div class="search-wrap">
+          <input type="search" v-model="searchQuery" placeholder="Search library…" class="lib-search">
+        </div>
+        <select v-model="sortMode" class="lib-sort" title="Sort library">
+          <option value="recent">🕒 Recently Read</option>
+          <option value="progress">📈 % Translated</option>
+          <option value="chapters">📚 Total Chapters</option>
+          <option value="title">🔤 Title (A-Z)</option>
+        </select>
+        <div class="view-toggle">
+          <button class="icon-btn-sm" :class="{active: viewMode === 'grid'}" @click="viewMode = 'grid'" title="Grid view">⊞</button>
+          <button class="icon-btn-sm" :class="{active: viewMode === 'list'}" @click="viewMode = 'list'" title="List view">≡</button>
+        </div>
+      </div>
     </div>
 
-    <div v-if="shown.length" class="library-grid">
-      <a v-for="n in shown" :key="n.id" class="novel-card" :href="'/novel/' + n.id">
+    <!-- Grid view -->
+    <div v-if="filteredNovels.length && viewMode === 'grid'" class="library-grid">
+      <a v-for="n in filteredNovels" :key="n.id" class="novel-card" :href="'/novel/' + n.id">
         <div class="cover" :style="coverStyle(n)">
           <span v-if="!n.cover_url" class="cover-initial">{{ coverText(n) }}</span>
           <span class="cover-badge" :class="'st-' + (n.reading_status||'ongoing')">{{ shelfLabel(n.reading_status || 'ongoing') }}</span>
@@ -153,10 +205,39 @@
         </div>
       </a>
     </div>
+
+    <!-- Compact List view -->
+    <div v-else-if="filteredNovels.length && viewMode === 'list'" class="library-list">
+      <a v-for="n in filteredNovels" :key="n.id" class="list-card" :href="'/novel/' + n.id">
+        <div class="list-cover" :style="coverStyle(n)">
+          <span v-if="!n.cover_url" class="list-cover-initial">{{ coverText(n) }}</span>
+        </div>
+        <div class="list-main">
+          <div class="list-header">
+            <h4>{{ n.title_translated || n.title }}</h4>
+            <span class="cover-badge" :class="'st-' + (n.reading_status||'ongoing')">{{ shelfLabel(n.reading_status || 'ongoing') }}</span>
+          </div>
+          <div class="list-meta">{{ n.author || 'Unknown' }} · {{ n.total_chapters }} chapters · {{ n.source_site }}</div>
+          <div class="list-progress-bar">
+            <div class="list-progress-fill" :style="{width: pct(n) + '%'}"></div>
+          </div>
+          <div class="list-stats">
+            <span>✓ {{ n.translated_chapters }}/{{ n.total_chapters }} translated ({{ pct(n) }}%)</span>
+            <span v-if="n.read_chapters > 0">📖 read {{ n.read_chapters }} ch ({{ readPct(n) }}%)</span>
+          </div>
+        </div>
+        <div class="list-actions">
+          <button v-if="n.last_read" class="btn small accent" @click.prevent="openChapter(n.id, n.last_read.chapter_number)">Continue Ch {{ n.last_read.chapter_number }}</button>
+          <span v-else class="btn small ghost">Open</span>
+        </div>
+      </a>
+    </div>
+
     <div v-else class="empty-state">
       <div class="empty-emoji">📚</div>
-      <div class="empty-title">{{ shelf === 'all' ? 'Your library is empty' : 'Nothing on this shelf yet' }}</div>
-      <div class="empty-sub" v-if="shelf === 'all'">Paste a novel URL above to add your first book — it will be scraped and AI-translated automatically.</div>
+      <div class="empty-title">{{ searchQuery ? 'No novels match your search' : (shelf === 'all' ? 'Your library is empty' : 'Nothing on this shelf yet') }}</div>
+      <div class="empty-sub" v-if="searchQuery">Try a different title, author, or keyword.</div>
+      <div class="empty-sub" v-else-if="shelf === 'all'">Paste a novel URL above to add your first book — it will be scraped and AI-translated automatically.</div>
       <div class="empty-sub" v-else>Move novels here from their page (📖 Ongoing / 🔖 Read Later / ✅ Done / 🗑 Dropped), or switch to <button class="btn ghost small" @click="goShelf('all')">All</button>.</div>
     </div>
   </div>
