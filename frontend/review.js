@@ -23,9 +23,15 @@
     template: `
 <div>
   <header class="topbar">
-    <a class="brand" href="/">📚 NyaaReader</a>
-    <a class="btn ghost small" :href="'/novel/' + novel.id">← Chapters</a>
-    <span class="crumb">Story so far · {{ novel.title_translated || novel.title }}</span>
+    <div class="container">
+      <a class="brand" href="/"><span class="logo-mark"><svg class="ic ic-lg"><use href="#i-cat"/></svg></span> NyaaReader</a>
+      <span class="crumb"><a :href="'/novel/' + novel.id">{{ novel.title_translated || novel.title }}</a> › Story so far</span>
+      <span class="flex-spacer"></span>
+      <nav class="topnav">
+        <a class="nav-link" :href="'/novel/' + novel.id"><svg class="ic"><use href="#i-book"/></svg><span class="nav-label">Chapters</span></a>
+        <a class="nav-link" href="/"><svg class="ic"><use href="#i-home"/></svg><span class="nav-label">Library</span></a>
+      </nav>
+    </div>
   </header>
 
   <div class="container" style="max-width:760px">

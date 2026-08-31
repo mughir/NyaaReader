@@ -43,6 +43,13 @@ class TranslationResult:
     error: Optional[str] = None
 
 
+@dataclass
+class StreamChunk:
+    delta: str = ""
+    is_final: bool = False
+    result: Optional["MemoryTranslationResult"] = None
+
+
 class GeminiTranslator:
     """Gemini AI translation service for novels"""
     
@@ -85,6 +92,16 @@ class GeminiTranslator:
         """Single model call returning raw text. Overridden by the relay fallback."""
         response = self.model.generate_content(prompt)
         return response.text or ""
+
+    def _generate_stream(self, prompt: str):
+        """Yield text chunks from the model in real time."""
+        if hasattr(self, "model") and self.model:
+            response = self.model.generate_content(prompt, stream=True)
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+        else:
+            yield self._generate(prompt)
 
     def translate_short(self, text: str, source_lang: str, target_lang: str = "en") -> str:
         """Translate a short string (title, synopsis) — no chunking, tolerant."""
@@ -390,6 +407,62 @@ TRANSLATE NOW:"""
             success=True,
             memory=updated,
         )
+
+    def translate_with_memory_stream(
+        self,
+        text: str,
+        source_lang: str,
+        target_lang: str = "en",
+        quality: Literal["fast", "balanced", "quality"] = "balanced",
+        memory: Optional["MemoryContext"] = None,
+        glossary: Optional[Dict[str, str]] = None,
+    ):
+        """
+        Stream translation deltas in real-time, then update per-novel memory.
+        Yields StreamChunk(delta=...) for chunks, and StreamChunk(is_final=True, result=...) when complete.
+        """
+        memory = memory or MemoryContext()
+        known = self._build_known_context(memory)
+        prompt = self._build_prompt(
+            text, source_lang, target_lang, quality,
+            context=known or None,
+            glossary=glossary or memory.terms_dict(),
+        )
+        accumulated = []
+        try:
+            for chunk in self._generate_stream(prompt):
+                if chunk:
+                    accumulated.append(chunk)
+                    yield StreamChunk(delta=chunk, is_final=False)
+        except Exception as e:
+            logger.error(f"Stream generation error: {e}")
+            yield StreamChunk(is_final=True, result=MemoryTranslationResult(
+                translated_text="", success=False, error=str(e), memory=memory
+            ))
+            return
+
+        translated = "".join(accumulated).strip()
+        if not translated:
+            yield StreamChunk(is_final=True, result=MemoryTranslationResult(
+                translated_text="", success=False, error="Empty response from model stream", memory=memory
+            ))
+            return
+
+        try:
+            update_text = self._memory_update_block(text, translated, memory, source_lang, target_lang)
+            updated = self._parse_memory_update(update_text, memory)
+        except Exception:
+            updated = memory
+
+        updated = self._reapply_locks(updated, memory)
+
+        final_res = MemoryTranslationResult(
+            translated_text=translated,
+            model_used=self.model_name,
+            success=True,
+            memory=updated,
+        )
+        yield StreamChunk(is_final=True, result=final_res)
 
     @staticmethod
     def _reapply_locks(updated: "MemoryContext", previous: "MemoryContext") -> "MemoryContext":
@@ -737,6 +810,51 @@ class OpenAIRelayTranslator(GeminiTranslator):
                 logger.warning(f"relay call failed (attempt {attempt + 1}): {e}")
         raise RuntimeError(f"Relay returned no content: {last_err}")
 
+    def _generate_stream(self, prompt: str):
+        """POST prompt with stream=True to the OpenAI-compatible relay and yield tokens/chunks."""
+        payload = {
+            "model": self.model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": self.temperature,
+            "max_tokens": 8192,
+            "stream": True,
+        }
+        req = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+                "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+                "X-Title": "Hermes Agent",
+                "User-Agent": "HermesAgent/3.1.0",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                for line in resp:
+                    line_str = line.decode("utf-8").strip()
+                    if not line_str or not line_str.startswith("data:"):
+                        continue
+                    data_str = line_str[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk_json = json.loads(data_str)
+                        delta = chunk_json.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            yield content
+                    except Exception:
+                        continue
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                raise RelayAuthError(f"Relay rejected the API key (HTTP {e.code})")
+            yield self._generate(prompt)
+        except Exception as e:
+            logger.warning(f"relay streaming error ({e}), falling back to standard generate")
+            yield self._generate(prompt)
+
 
 class FallbackTranslator:
     """Wraps a primary translator with an ordered chain of fallbacks. On any
@@ -789,6 +907,33 @@ class FallbackTranslator:
 
     def translate_with_memory(self, *args, **kwargs) -> "MemoryTranslationResult":
         return self._run("translate_with_memory", *args, **kwargs)
+
+    def translate_with_memory_stream(self, *args, **kwargs):
+        """Stream translation on primary translator, walking fallback chain on failure."""
+        chain = [self.primary] + list(self.fallbacks)
+        last_error = None
+        for i, translator in enumerate(chain):
+            if translator is None:
+                continue
+            try:
+                gen = translator.translate_with_memory_stream(*args, **kwargs)
+                yielded_any = False
+                for chunk in gen:
+                    yielded_any = True
+                    yield chunk
+                if yielded_any:
+                    return
+            except RelayAuthError as e:
+                logger.error(f"Relay auth failure on translator #{i}: {e}")
+                raise
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"Streaming on translator #{i} ({type(translator).__name__}) failed ({e}); trying next")
+        if last_error:
+            logger.error(f"All streaming translators failed; last error: {last_error}")
+            yield StreamChunk(is_final=True, result=MemoryTranslationResult(
+                translated_text="", success=False, error=last_error, memory=kwargs.get("memory")
+            ))
 
     # Memory-compaction helpers: forward to the first translator in the chain
     # that exposes them (the primary has them; fallbacks inherit from GeminiTranslator).
