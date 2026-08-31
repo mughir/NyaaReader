@@ -623,7 +623,17 @@
                translateAll, checkUpdates, setShelf,
                addChar, addTerm, removeEntry, batch, pollBatch };
     },
-    mounted() { this.ensureMetaTranslated(); this.pollBatch(); this.loadFailedCount(); this.loadDriftCount(); },
+    mounted() {
+      this.ensureMetaTranslated();
+      this.pollBatch();
+      this.loadFailedCount();
+      this.loadDriftCount();
+      document.addEventListener("mousedown", (e) => {
+        if (this.moreOpen && !e.target.closest(".more-menu")) {
+          this.moreOpen = false;
+        }
+      });
+    },
     template: `
 <div>
   <header class="topbar">

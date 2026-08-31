@@ -193,9 +193,21 @@
       function showHover(i, ev) {
         hoverPara.value = i;
         const rect = ev.currentTarget.getBoundingClientRect();
-        hoverPos.value = { x: rect.left, y: rect.top - 8 };
+        const x = Math.max(12, Math.min(window.innerWidth - 390, rect.left));
+        const y = rect.top < 140 ? rect.bottom + 8 : Math.max(12, rect.top - 8);
+        hoverPos.value = { x, y };
       }
       function hideHover() { hoverPara.value = -1; }
+
+      // Auto-scroll TOC drawer to current chapter when opened
+      Vue.watch(tocOpen, (open) => {
+        if (open) {
+          Vue.nextTick(() => {
+            const cur = document.querySelector(".toc-item.cur");
+            if (cur) cur.scrollIntoView({ block: "center", behavior: "smooth" });
+          });
+        }
+      });
       // ---- delegated paragraph hover (perf): one listener on the container
       // instead of @mouseenter/@mouseleave closures on every <p> (a 500-para
       // chapter would otherwise mount 1000 handlers). Also skip entirely on
@@ -766,6 +778,9 @@
         document.addEventListener("mouseup", onTextSelect);
         document.addEventListener("mousedown", (e) => {
           if (!e.target.closest(".sel-pop")) hideSelPop();
+          if (settingsOpen.value && !e.target.closest(".settings-pop") && !e.target.closest("[title*='Reading settings']")) {
+            settingsOpen.value = false;
+          }
         });
         document.querySelector(".reader-main")?.addEventListener("touchstart", onTouchStart, { passive: true });
         document.querySelector(".reader-main")?.addEventListener("touchend", onTouchEnd, { passive: true });
