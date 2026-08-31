@@ -3586,6 +3586,7 @@ async def get_stats(db: Session = Depends(get_db_session)):
                .filter(Chapter.read_at.isnot(None))
                .order_by(Chapter.read_at.desc()).limit(6).all()):
         recent.append({
+            "novel_id": ch[0].novel_id,
             "chapter_number": ch[0].chapter_number,
             "chapter_title": ch[0].title_translated or ch[0].title or "",
             "novel": ch[1] or ch[2] or "?",

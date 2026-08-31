@@ -973,12 +973,10 @@
         </a>
       </div>
       <div class="ce-actions">
-        <a v-if="chapterNumber > 1" class="btn ghost small" :href="'/novel/' + novelId + '/chapter/' + (chapterNumber-1)">← Prev{{ prevChapterTitle ? '' : '' }}</a>
-        <span v-else></span>
+        <a v-if="chapterNumber > 1" class="btn ghost small" :href="'/novel/' + novelId + '/chapter/' + (chapterNumber-1)">← Prev</a>
         <button class="btn ghost small" @click="jumpDiary">✍️ My thoughts</button>
         <a class="btn ghost small" :href="'/novel/' + novelId">📚 Chapters</a>
         <a v-if="chapterNumber < total" class="btn small" :href="'/novel/' + novelId + '/chapter/' + (chapterNumber+1)">Next →</a>
-        <span v-else></span>
       </div>
       <div class="ce-jump">
         <span class="muted" style="font-size:12px">Jump to:</span>
