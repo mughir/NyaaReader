@@ -917,11 +917,26 @@ class FallbackTranslator:
                 continue
             try:
                 gen = translator.translate_with_memory_stream(*args, **kwargs)
-                yielded_any = False
+                accumulated_chunks = []
+                success = False
                 for chunk in gen:
-                    yielded_any = True
-                    yield chunk
-                if yielded_any:
+                    if getattr(chunk, "is_final", False):
+                        res = getattr(chunk, "result", None)
+                        if res and getattr(res, "success", True):
+                            success = True
+                            for prev_chunk in accumulated_chunks:
+                                yield prev_chunk
+                            yield chunk
+                            return
+                        else:
+                            last_error = getattr(res, "error", None) or "stream translation failed"
+                            break
+                    else:
+                        accumulated_chunks.append(chunk)
+                if not success and accumulated_chunks:
+                    # If generator finished without is_final but yielded deltas
+                    for prev_chunk in accumulated_chunks:
+                        yield prev_chunk
                     return
             except RelayAuthError as e:
                 logger.error(f"Relay auth failure on translator #{i}: {e}")

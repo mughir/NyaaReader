@@ -4002,16 +4002,22 @@ async def translate_chapter_stream(
                 else:
                     final_result = getattr(item, "result", None)
 
-            if final_result and final_result.success:
+            final_translated_text = ""
+            if final_result and getattr(final_result, "success", False) and final_result.translated_text:
+                final_translated_text = final_result.translated_text
+            elif full_text.strip():
+                final_translated_text = full_text.strip()
+
+            if final_translated_text:
                 ch_obj = stream_db.query(Chapter).filter(
                     Chapter.novel_id == novel_id,
                     Chapter.chapter_number == chapter_number,
                 ).first()
                 if ch_obj:
-                    ch_obj.translated_content = final_result.translated_text
-                    ch_obj.translated_word_count = len(final_result.translated_text.split())
+                    ch_obj.translated_content = final_translated_text
+                    ch_obj.translated_word_count = len(final_translated_text.split())
                     ch_obj.is_translated = True
-                    ch_obj.translation_model = final_result.model_used
+                    ch_obj.translation_model = getattr(final_result, "model_used", "") or getattr(translator, "model_name", "ai")
                     ch_obj.last_error = ""
                     ch_obj.updated_at = datetime.utcnow()
 
@@ -4023,20 +4029,20 @@ async def translate_chapter_stream(
                         except Exception:
                             ch_obj.title_translated = ch_obj.title
 
-                    if final_result.memory:
+                    if final_result and getattr(final_result, "memory", None):
                         m = final_result.memory
-                        mem_row.characters = m.characters or ""
-                        mem_row.terms = m.terms or ""
-                        mem_row.plot = m.plot or ""
-                        mem_row.arc_plot = m.arc_plot or ""
-                        mem_row.chapter_plot = m.chapter_plot or ""
-                        mem_row.memory = m.memory or ""
-                        mem_row.glossary_entries = _dump_glossary(m.glossary_entries)
+                        mem_row.characters = getattr(m, "characters", "") or ""
+                        mem_row.terms = getattr(m, "terms", "") or ""
+                        mem_row.plot = getattr(m, "plot", "") or ""
+                        mem_row.arc_plot = getattr(m, "arc_plot", "") or ""
+                        mem_row.chapter_plot = getattr(m, "chapter_plot", "") or ""
+                        mem_row.memory = getattr(m, "memory", "") or ""
+                        mem_row.glossary_entries = _dump_glossary(getattr(m, "glossary_entries", []))
 
                     stream_db.commit()
-                    yield f"event: done\ndata: {json.dumps({'status': 'completed', 'translated_content': final_result.translated_text, 'title_translated': ch_obj.title_translated})}\n\n"
+                    yield f"event: done\ndata: {json.dumps({'status': 'completed', 'translated_content': final_translated_text, 'title_translated': ch_obj.title_translated or ch_obj.title})}\n\n"
             else:
-                err = (final_result.error if final_result else "Translation failed")
+                err = getattr(final_result, "error", None) or "Translation failed"
                 yield f"event: error\ndata: {json.dumps({'error': err})}\n\n"
         finally:
             stream_db.close()
