@@ -816,6 +816,7 @@
                 <strong v-else-if="batch.kind==='retry-failed'">Retrying failed chapters…</strong>
                 <strong v-else-if="batch.kind==='epub'">Building EPUB…</strong>
                 <strong v-else-if="batch.kind==='retranslate-drift'">Fixing glossary drift…</strong>
+                <strong v-else-if="batch.kind==='translate-selected'">Translating selected chapters…</strong>
                 <strong v-else>Working…</strong></span>
             <span class="batch-count">{{ batch.done }}/{{ batch.total }}</span>
             <button class="btn ghost small batch-stop" @click="stopBatch" :disabled="stoppingBatch">{{ stoppingBatch ? 'Stopping…' : 'Stop' }}</button>

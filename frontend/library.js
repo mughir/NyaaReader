@@ -16,8 +16,9 @@
   const app = createApp({
     setup() {
       const novels = ref(DATA);
-      const shelf = ref(window.__SHELF__ || "all");
-      const searchQuery = ref("");
+      const urlParams = new URLSearchParams(window.location.search);
+      const shelf = ref(urlParams.get("shelf") || window.__SHELF__ || "all");
+      const searchQuery = ref(urlParams.get("q") || "");
       const sortMode = ref(localStorage.getItem("novelreader.lib_sort") || "recent");
       const viewMode = ref(localStorage.getItem("novelreader.lib_view") || "grid");
       const url = ref("");
