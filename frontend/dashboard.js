@@ -73,10 +73,10 @@
 
       <h2 class="section-title"><svg class="ic"><use href="#i-layers"/></svg> Shelves</h2>
       <div class="dash-shelves">
-        <div v-for="(count, key) in stats.shelves" :key="key" class="shelf-chip">
+        <a v-for="(count, key) in stats.shelves" :key="key" class="shelf-chip" :href="'/?shelf=' + key" style="text-decoration:none">
           <svg class="ic"><use :href="'#' + (SHELF_ICON[key] || 'i-book')"/></svg>
           {{ SHELF_LABEL[key] || key }} <strong class="chip-count">{{ count }}</strong>
-        </div>
+        </a>
         <div v-if="Object.keys(stats.shelves).length === 0" class="muted">No novels yet.</div>
       </div>
 
