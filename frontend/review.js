@@ -17,8 +17,15 @@
       const totalDiary = ref(diary.value.length);
 
       function fmtChapter(num) { return `Ch ${num}`; }
+      function formatChar(line) {
+        const parts = line.split(/ [-—] /);
+        if (parts.length >= 2) {
+          return { name: parts[0].trim(), desc: parts.slice(1).join(" - ").trim() };
+        }
+        return { name: line, desc: "" };
+      }
 
-      return { memory, diary, glossary, characterLines, memoryNotes, novel, totalDiary, fmtChapter };
+      return { memory, diary, glossary, characterLines, memoryNotes, novel, totalDiary, fmtChapter, formatChar };
     },
     template: `
 <div>
@@ -59,7 +66,10 @@
     <!-- Characters -->
     <div v-if="characterLines.length" class="rv-card">
       <h3>👥 Characters</h3>
-      <div v-for="(c, i) in characterLines" :key="i" class="rv-char">{{ c }}</div>
+      <div v-for="(c, i) in characterLines" :key="i" class="rv-char">
+        <strong>{{ formatChar(c).name }}</strong>
+        <span v-if="formatChar(c).desc" class="muted"> — {{ formatChar(c).desc }}</span>
+      </div>
     </div>
 
     <!-- Glossary terms -->

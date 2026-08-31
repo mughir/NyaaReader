@@ -67,6 +67,7 @@ body {
 }
 a { color: var(--accent-strong); text-decoration: none; }
 a:hover { text-decoration: underline; }
+hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .container { max-width: 1080px; margin: 0 auto; padding: 16px; }
 
 /* scoped scrollbars (desktop pointers only) */
@@ -376,7 +377,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .pager-controls .btn { padding: 5px 8px; }
 .pager-controls .pager-page { min-width: 30px; padding: 5px 0; justify-content: center; }
 .pager .btn:disabled { opacity: .4; cursor: default; }
-.pager .btn.active { background: var(--accent, #ff6b9d); color: #fff; border-color: transparent; }
+.pager .btn.active { background: var(--accent); color: #fff; border-color: transparent; }
 .pager .pg-ellipsis { opacity: .5; cursor: default; }
 /* jump box: compact, height-matched to the page buttons, no redundant label */
 .pg-jump { display: inline-flex; align-items: center; gap: 4px; }
