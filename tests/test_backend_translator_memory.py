@@ -56,3 +56,32 @@ def test_no_locks_leaves_memory_untouched():
     updated = MemoryContext(characters="whatever the model wrote")
     out = GeminiTranslator._reapply_locks(updated, MemoryContext())
     assert out is updated
+
+
+def test_sync_glossary_entries_merges_new_characters_and_terms():
+    from translator import sync_glossary_entries
+    existing = [
+        {"type": "character", "source": "安潔莉雅", "translated": "Angelia", "note": "the princess", "locked": True}
+    ]
+    chars = "Angelia (安潔莉雅) - the princess, now queen\nBoran (博兰) - loyal commander"
+    terms = "Longyuan (龙渊) - mythical city\n魔力 = mana"
+    
+    synced = sync_glossary_entries(chars, terms, existing)
+    
+    assert len(synced) == 4
+    angelia = next(e for e in synced if e["source"] == "安潔莉雅")
+    assert angelia["locked"] is True
+    assert angelia["translated"] == "Angelia"
+    
+    boran = next(e for e in synced if e["source"] == "博兰")
+    assert boran["translated"] == "Boran"
+    assert boran["type"] == "character"
+    
+    longyuan = next(e for e in synced if e["source"] == "龙渊")
+    assert longyuan["translated"] == "Longyuan"
+    assert longyuan["type"] == "term"
+    assert longyuan["note"] == "mythical city"
+    
+    mana = next(e for e in synced if e["source"] == "魔力")
+    assert mana["translated"] == "mana"
+    assert mana["type"] == "term"

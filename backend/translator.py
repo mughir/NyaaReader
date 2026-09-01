@@ -617,6 +617,116 @@ All values are plain strings.
             logger.warning(f"memory compaction failed: {e}")
         return memory
 
+def sync_glossary_entries(
+    characters_text: str,
+    terms_text: str,
+    existing_entries: Optional[List[Dict]] = None,
+) -> List[Dict]:
+    """Parse characters and terms free-text and merge with existing glossary_entries.
+
+    1. Preserves existing entries, including locked status, user edits, and custom notes.
+    2. Adds newly discovered characters and terms from memory update.
+    3. Updates empty fields in existing non-locked entries if new details were learned.
+    """
+    import re
+    entries = [dict(e) for e in (existing_entries or [])]
+    existing_by_src = {
+        (e.get("type", "character"), (e.get("source") or "").strip().lower()): e
+        for e in entries if e.get("source")
+    }
+    existing_by_trans = {
+        (e.get("type", "character"), (e.get("translated") or "").strip().lower()): e
+        for e in entries if e.get("translated")
+    }
+
+    # 1. Parse Characters
+    if characters_text:
+        anchors = list(re.finditer(r"([^;()\n]{1,80}?)\s*\(([^()]+)\)\s*[-–:]\s*", characters_text))
+        for i, m in enumerate(anchors):
+            end = anchors[i + 1].start() if i + 1 < len(anchors) else len(characters_text)
+            note = characters_text[m.end():end].strip().rstrip(";").strip()
+            translated = m.group(1).strip()
+            src = m.group(2).strip()
+            aliases = re.split(r"\s*/\s*", translated)
+            primary = aliases[0].strip()
+            src_aliases = re.split(r"\s*/\s*", src) if "/" in src else []
+            src_primary = src_aliases[0].strip() if src_aliases else src
+            if not primary and not src_primary:
+                continue
+
+            k_src = ("character", src_primary.lower()) if src_primary else None
+            k_trans = ("character", primary.lower()) if primary else None
+            matched = (k_src and existing_by_src.get(k_src)) or (k_trans and existing_by_trans.get(k_trans))
+
+            if matched:
+                if not matched.get("locked"):
+                    if primary and not matched.get("translated"):
+                        matched["translated"] = primary
+                    if note and not matched.get("note"):
+                        matched["note"] = note
+            else:
+                new_entry = {
+                    "type": "character",
+                    "translated": primary,
+                    "source": src_primary,
+                    "note": note,
+                    "locked": False,
+                }
+                entries.append(new_entry)
+                if k_src:
+                    existing_by_src[k_src] = new_entry
+                if k_trans:
+                    existing_by_trans[k_trans] = new_entry
+
+    # 2. Parse Terms
+    if terms_text:
+        for line in terms_text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            m1 = re.match(r"^([^()]{1,80}?)\s*\(([^()]+)\)\s*[-–:]\s*(.*)$", line)
+            m2 = re.match(r"^(.*?)\s*(?:=|->|→)\s*(.*)$", line)
+            if m1:
+                translated = m1.group(1).strip()
+                source = m1.group(2).strip()
+                note = m1.group(3).strip()
+            elif m2:
+                source = m2.group(1).strip()
+                translated = m2.group(2).strip()
+                note = ""
+            else:
+                continue
+
+            if not source and not translated:
+                continue
+
+            k_src = ("term", source.lower()) if source else None
+            k_trans = ("term", translated.lower()) if translated else None
+            matched = (k_src and existing_by_src.get(k_src)) or (k_trans and existing_by_trans.get(k_trans))
+
+            if matched:
+                if not matched.get("locked"):
+                    if translated and not matched.get("translated"):
+                        matched["translated"] = translated
+                    if note and not matched.get("note"):
+                        matched["note"] = note
+            else:
+                new_entry = {
+                    "type": "term",
+                    "source": source,
+                    "translated": translated,
+                    "note": note,
+                    "locked": False,
+                }
+                entries.append(new_entry)
+                if k_src:
+                    existing_by_src[k_src] = new_entry
+                if k_trans:
+                    existing_by_trans[k_trans] = new_entry
+
+    return entries
+
+
     @staticmethod
     def _parse_memory_update(text: str, memory: "MemoryContext"):
         """Tolerant JSON extraction for the memory-update block."""
@@ -638,15 +748,19 @@ All values are plain strings.
             val = data.get(key)
             return val.strip() if isinstance(val, str) else (memory.__dict__.get(key) or "")
 
+        chars = _get("characters")
+        terms = _get("terms")
+        synced_glossary = sync_glossary_entries(chars, terms, memory.glossary_entries)
+
         updated = MemoryContext(
             general_instruction=memory.general_instruction,
-            characters=_get("characters"),
-            terms=_get("terms"),
+            characters=chars,
+            terms=terms,
             plot=_get("plot"),
             arc_plot=_get("arc_plot"),
             chapter_plot=_get("chapter_plot"),
             memory=_get("memory"),
-            glossary_entries=memory.glossary_entries,  # carried forward; locks reapplied by caller
+            glossary_entries=synced_glossary or memory.glossary_entries,
         )
         return updated
 
@@ -691,20 +805,42 @@ class MemoryContext:
         )
 
     def terms_dict(self) -> Optional[Dict[str, str]]:
-        """Best-effort parse of multi-line 'k -> v' terms into a dict."""
-        if not self.terms:
-            return None
+        """Best-effort parse of multi-line terms and locked entries into a dict."""
+        import re
         result = {}
-        for line in self.terms.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            if "->" in line:
-                k, v = line.split("->", 1)
-                result[k.strip()] = v.strip()
-            elif "=" in line:
-                k, v = line.split("=", 1)
-                result[k.strip()] = v.strip()
+        for e in self.locked_entries():
+            src = (e.get("source") or "").strip()
+            tgt = (e.get("translated") or "").strip()
+            if src and tgt:
+                result[src] = tgt
+
+        if self.terms:
+            for line in self.terms.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                m1 = re.match(r"^([^()]{1,80}?)\s*\(([^()]+)\)\s*[-–:]\s*", line)
+                if m1:
+                    tgt = m1.group(1).strip()
+                    src = m1.group(2).strip()
+                    if src and tgt and src not in result:
+                        result[src] = tgt
+                    continue
+                if "->" in line:
+                    k, v = line.split("->", 1)
+                    k_s, v_s = k.strip(), v.strip()
+                    if k_s and v_s and k_s not in result:
+                        result[k_s] = v_s
+                elif "→" in line:
+                    k, v = line.split("→", 1)
+                    k_s, v_s = k.strip(), v.strip()
+                    if k_s and v_s and k_s not in result:
+                        result[k_s] = v_s
+                elif "=" in line:
+                    k, v = line.split("=", 1)
+                    k_s, v_s = k.strip(), v.strip()
+                    if k_s and v_s and k_s not in result:
+                        result[k_s] = v_s
         return result or None
 
     def needs_compaction(self) -> bool:

@@ -19,7 +19,7 @@ logger = logging.getLogger("novel-reader")
 
 from database import init_db, get_db_session
 from models import Novel, Chapter, ReadingProgress, NovelSettings, ScrapingLog, NovelMemory, Bookmark, DiaryEntry
-from translator import get_translator, TranslationResult, MemoryContext, RelayAuthError
+from translator import get_translator, TranslationResult, MemoryContext, RelayAuthError, sync_glossary_entries
 from scrapers import get_scraper_for_url, auto_detect_and_scrape
 
 from pathlib import Path
@@ -639,49 +639,20 @@ async def translate_chapter(
 
 
 def _load_glossary(mem_row) -> Optional[list]:
-    """Return structured glossary entries. Parses free-text memory on first use
-    (backward-compat), otherwise returns the stored JSON list."""
-    if getattr(mem_row, "glossary_entries", None):
-        return json.loads(mem_row.glossary_entries) if isinstance(mem_row.glossary_entries, str) else mem_row.glossary_entries
-    entries = []
-    # Characters: "Name (Original) - note" entries packed together, separated by
-    # "; Name (Original) -" boundaries. Descriptions may contain ';', so split at
-    # each 'Name (Original)' anchor rather than blindly on ';'.
-    # An anchor looks like "Translated (Original) - " — translated side may contain
-    # alias lists ("A / B / C (原名)") and must not contain parens or semicolons.
-    char_text = mem_row.characters or ""
-    anchors = list(re.finditer(r"([^;()]{1,80}?)\s*\(([^()]+)\)\s*[-–:]\s*", char_text))
-    for i, m in enumerate(anchors):
-        end = anchors[i + 1].start() if i + 1 < len(anchors) else len(char_text)
-        note = char_text[m.end():end].strip().rstrip(";").strip()
-        translated = m.group(1).strip()
-        # Alias list: "Yancai / Jiang Xianzi / Noviya (焰彩/姜仙子/諾維雅)" — the
-        # parenthesized part is one source name per alias; keep the FIRST pair as
-        # primary and fold the rest into the note.
-        aliases = re.split(r"\s*/\s*", translated)
-        primary = aliases[0].strip()
-        src = m.group(2).strip()
-        src_aliases = re.split(r"\s*/\s*", src) if "/" in src else []
-        if len(aliases) > 1:
-            alias_txt = "; ".join(
-                f"{a.strip()} ({s.strip()})" for a, s in zip(aliases[1:], src_aliases[1:])
-                if a.strip() and s.strip()
-            )
-            note = (alias_txt + "; " + note).strip() if alias_txt and note else (alias_txt or note)
-        entries.append({"type": "character", "translated": primary,
-                        "source": src_aliases[0].strip() if src_aliases else src,
-                        "note": note, "locked": False})
-    # Terms: "Original = Translation" or "Original -> Translation"
-    for line in (mem_row.terms or "").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        m = re.match(r"^(.*?)\s*(?:=|->|→)\s*(.*)$", line)
-        if m and m.group(2).strip():
-            entries.append({"type": "term", "source": m.group(1).strip(),
-                            "translated": m.group(2).strip(), "note": "",
-                            "locked": False})
-    return entries or None
+    """Return structured glossary entries. Automatically synchronizes newly
+    learned characters and terms into the structured glossary list while
+    preserving user locks and custom edits."""
+    if not mem_row:
+        return []
+    raw = getattr(mem_row, "glossary_entries", None)
+    existing = json.loads(raw) if isinstance(raw, str) else (raw or [])
+    synced = sync_glossary_entries(mem_row.characters or "", mem_row.terms or "", existing)
+    if synced and synced != existing:
+        try:
+            mem_row.glossary_entries = _dump_glossary(synced)
+        except Exception:
+            pass
+    return synced or existing or []
 
 
 def _dump_glossary(entries):
