@@ -58,11 +58,20 @@
       const descLong = computed(() =>
         (novel.value.description_translated || novel.value.description || "").length > 400
       );
-      // "Read" target: latest translated chapter (fallback: first chapter)
+      // "Read" target: next unread chapter or latest translated
       const readTarget = computed(() => {
+        const readChaps = chapters.value.filter(c => c.is_read).map(c => c.chapter_number);
+        const maxRead = readChaps.length ? Math.max(...readChaps) : 0;
+        const nextToRead = chapters.value.find(c => c.chapter_number > maxRead && c.is_translated);
+        if (nextToRead) return nextToRead.chapter_number;
         const tr = chapters.value.filter(c => c.is_translated).map(c => c.chapter_number);
         if (tr.length) return Math.max(...tr);
         return 1;
+      });
+      const readButtonText = computed(() => {
+        const readCount = chapters.value.filter(c => c.is_read).length;
+        if (readCount === 0) return `Read Ch ${readTarget.value}`;
+        return `Continue Ch ${readTarget.value}`;
       });
       const parsedDesc = computed(() => {
         const desc = novel.value.description_translated || novel.value.description || "";
@@ -717,7 +726,7 @@
                addChar, addTerm, removeEntry, batch, pollBatch,
                selectMode, selectedChapters, toggleSelectMode, isSelected, toggleChapterSelect,
                selectAllVisible, clearSelection, batchTranslateSelected, batchMarkRead,
-               parsedDesc, progressPct };
+               parsedDesc, progressPct, readButtonText };
     },
     mounted() {
       this.ensureMetaTranslated();
@@ -792,8 +801,8 @@
 
         <!-- Action Toolbar -->
         <div class="hero-actions">
-          <a class="btn hero-cta" :href="'/novel/' + novel.id + '/chapter/' + readTarget" title="Jump to the latest translated chapter">
-            <svg class="ic"><use href="#i-book"/></svg> Read
+          <a class="btn hero-cta" :href="'/novel/' + novel.id + '/chapter/' + readTarget" title="Jump to next unread chapter">
+            <svg class="ic"><use href="#i-book"/></svg> {{ readButtonText }}
           </a>
           <button class="btn soft" @click="translateAll" :disabled="translatingAll">
             <svg class="ic"><use href="#i-sparkle"/></svg> Translate to end
