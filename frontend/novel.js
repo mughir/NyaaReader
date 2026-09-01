@@ -961,6 +961,13 @@
         </a>
       </div>
     </div>
+    <div v-else class="empty-state">
+      <div class="empty-emoji">{{ q ? '🔍' : '📄' }}</div>
+      <div class="empty-title" v-if="q">No chapters match “{{ q }}”</div>
+      <div class="empty-title" v-else>No chapters here yet</div>
+      <div class="empty-sub" v-if="q">Try a different search, or switch to <button class="btn ghost small" @click="setSearchMode('content')"><svg class="ic"><use href="#i-search"/></svg> In-text</button> to search inside translations.</div>
+      <div class="empty-sub" v-else>Use <button class="btn ghost small" @click="fetchMore" :disabled="fetching">⬇ Fetch next 10</button> to download chapters from the source.</div>
+    </div>
 
     <!-- Floating Batch Action Bar -->
     <div v-if="selectedChapters.length" class="batch-bar">
@@ -974,14 +981,6 @@
         <button class="btn ghost small" @click="batchMarkRead(false)">Unread</button>
         <button class="btn ghost small" @click="clearSelection">✕</button>
       </div>
-    </div>
-    </div>
-    <div v-else class="empty-state">
-      <div class="empty-emoji">{{ q ? '🔍' : '📄' }}</div>
-      <div class="empty-title" v-if="q">No chapters match “{{ q }}”</div>
-      <div class="empty-title" v-else>No chapters here yet</div>
-      <div class="empty-sub" v-if="q">Try a different search, or switch to <button class="btn ghost small" @click="setSearchMode('content')"><svg class="ic"><use href="#i-search"/></svg> In-text</button> to search inside translations.</div>
-      <div class="empty-sub" v-else>Use <button class="btn ghost small" @click="fetchMore" :disabled="fetching">⬇ Fetch next 10</button> to download chapters from the source.</div>
     </div>
 
   </div>
