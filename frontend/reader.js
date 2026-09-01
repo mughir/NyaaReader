@@ -7,28 +7,30 @@
   const DATA = window.__READER__;
   if (!DATA) return;
 
-  const { createApp, ref, computed, onMounted, onUnmounted } = Vue;
+  const { createApp, ref, computed, watch, nextTick, onMounted, onUnmounted } = Vue;
 
   // -------- persisted reader prefs (localStorage) --------
   // Load is sanitized: a corrupted/out-of-range value can never take the
   // reader down or render it broken (e.g. font: 999, width: -50, or a
   // non-object from a previous buggy write).
   const PREFS_KEY = "novelreader.prefs";
-  const PREFS_DEFAULTS = { theme: "light", font: 18, line: 1.9, showOrig: false, fontFamily: "serif", width: 700, focus: false, autoFetch: true };
-  const THEMES = ["light", "sepia", "dark"];
-  const FONT_FAMILIES = ["serif", "sans"];
+  const PREFS_DEFAULTS = { theme: "light", font: 18, line: 1.8, paraMargin: "1.2em", showOrig: false, fontFamily: "literata", width: 780, focus: false, autoFetch: true, entityTooltips: true };
+  const THEMES = ["light", "sepia", "dark", "oled"];
+  const FONT_FAMILIES = ["serif", "sans", "literata", "lora", "atkinson"];
   function clampNum(v, lo, hi, dflt) { return (typeof v === "number" && isFinite(v)) ? Math.min(hi, Math.max(lo, v)) : dflt; }
   function sanitizePrefs(raw) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ...PREFS_DEFAULTS };
     return {
       theme: THEMES.includes(raw.theme) ? raw.theme : PREFS_DEFAULTS.theme,
-      font: clampNum(raw.font, 13, 26, PREFS_DEFAULTS.font),
+      font: clampNum(raw.font, 12, 32, PREFS_DEFAULTS.font),
       line: clampNum(raw.line, 1.3, 2.4, PREFS_DEFAULTS.line),
+      paraMargin: typeof raw.paraMargin === "string" ? raw.paraMargin : PREFS_DEFAULTS.paraMargin,
       showOrig: raw.showOrig === true,
       fontFamily: FONT_FAMILIES.includes(raw.fontFamily) ? raw.fontFamily : PREFS_DEFAULTS.fontFamily,
       width: clampNum(raw.width, 320, 1000, PREFS_DEFAULTS.width),
       focus: raw.focus === true,
       autoFetch: raw.autoFetch !== false,
+      entityTooltips: raw.entityTooltips !== false,
     };
   }
   let prefs = sanitizePrefs((() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY) || "{}"); } catch (e) { return null; } })());
@@ -229,7 +231,7 @@
       // Auto-scroll TOC drawer to current chapter when opened
       watch(tocOpen, (open) => {
         if (open) {
-          Vue.nextTick(() => {
+          nextTick(() => {
             const cur = document.querySelector(".toc-item.cur");
             if (cur) cur.scrollIntoView({ block: "center", behavior: "smooth" });
           });
