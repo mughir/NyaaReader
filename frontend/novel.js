@@ -64,6 +64,21 @@
         if (tr.length) return Math.max(...tr);
         return 1;
       });
+      const parsedDesc = computed(() => {
+        const desc = novel.value.description_translated || novel.value.description || "";
+        const tagRegex = /\[([^\]]+)\]/g;
+        const tags = [];
+        let m;
+        while ((m = tagRegex.exec(desc)) !== null) {
+          tags.push(m[1].trim());
+        }
+        const textWithoutTags = desc.replace(/\[[^\]]+\]/g, "").trim();
+        return { tags, text: textWithoutTags || desc };
+      });
+      const progressPct = computed(() => {
+        if (!novel.value.total_chapters) return 0;
+        return Math.round((translatedCount.value / novel.value.total_chapters) * 100);
+      });
       // Editable copy: {characters: [], terms: []}
       const gloss = ref({ characters: [], terms: [] });
       const q = ref("");
@@ -678,7 +693,6 @@
             chapters.value.forEach(c => {
               if (list.includes(c.chapter_number)) c.is_read = isRead;
             });
-            note.value = `Marked ${list.length} chapters as ${isRead ? 'read' : 'unread'} ✓`;
             clearSelection();
           }
         } catch (e) { error.value = "Batch mark failed: " + e.message; }
@@ -702,7 +716,8 @@
                translateAll, checkUpdates, setShelf,
                addChar, addTerm, removeEntry, batch, pollBatch,
                selectMode, selectedChapters, toggleSelectMode, isSelected, toggleChapterSelect,
-               selectAllVisible, clearSelection, batchTranslateSelected, batchMarkRead };
+               selectAllVisible, clearSelection, batchTranslateSelected, batchMarkRead,
+               parsedDesc, progressPct };
     },
     mounted() {
       this.ensureMetaTranslated();
@@ -732,9 +747,7 @@
 
   <div class="container">
     <div class="hero" :class="{ 'has-bg': !!novel.cover_url }">
-      <!-- blurred cover backdrop (fill the card, not dead space). Wrapped in
-           its own clipped layer so .hero never needs overflow:hidden — that
-           would clip the floating more-menu popover below the card. -->
+      <!-- blurred cover backdrop -->
       <div class="hero-bg-clip" v-if="novel.cover_url">
         <div class="hero-bg" :style="{ backgroundImage: 'url(' + novel.cover_url + ')' }"></div>
       </div>
@@ -742,37 +755,52 @@
         <div class="hero-cover">
           <img v-if="novel.cover_url" class="cover" :src="novel.cover_url" :alt="novel.title">
           <div v-else class="cover" style="display:flex;align-items:center;justify-content:center;font-size:44px">📖</div>
-          <div class="cover-actions" v-if="!generatingCover && !uploadingCover">
-            <button class="cover-act" @click="generateCover" title="Generate AI cover">🎨</button>
-            <button class="cover-act" @click="coverInput && coverInput.click()" title="Upload cover">⬆</button>
-          </div>
-          <div class="cover-actions" v-else>
-            <span class="cover-act spin">{{ generatingCover ? '🎨' : '⬆' }}</span>
-          </div>
         </div>
-        <!-- badges now live under the cover, filling the left column -->
-        <div class="hero-meta">
-          <span class="badge">{{ novel.original_language }} → {{ novel.target_language }}</span>
-          <span class="badge">{{ novel.status }}</span>
-          <span class="badge ok">✓ {{ translatedCount }} / {{ novel.total_chapters }} translated</span>
+        <div class="hero-cover-btns" v-if="!generatingCover && !uploadingCover">
+          <button class="hero-cover-btn" @click="generateCover" title="Generate AI cover">🎨 AI Cover</button>
+          <button class="hero-cover-btn" @click="coverInput && coverInput.click()" title="Upload cover">⬆ Upload</button>
+        </div>
+        <div class="hero-cover-btns" v-else>
+          <span class="hero-cover-btn spin" style="cursor:default">{{ generatingCover ? '🎨 Generating…' : '⬆ Uploading…' }}</span>
         </div>
       </div>
       <div class="info">
+        <div class="hero-meta-row">
+          <span class="badge" :class="'st-' + shelfStatus">● {{ shelfLabel(shelfStatus) }}</span>
+          <span class="badge ok">✓ {{ translatedCount }} / {{ novel.total_chapters }} translated ({{ progressPct }}%)</span>
+          <span class="badge">{{ novel.original_language ? novel.original_language.toUpperCase() : 'ZH' }} → {{ novel.target_language ? novel.target_language.toUpperCase() : 'EN' }}</span>
+          <span class="badge" v-if="novel.source_site">{{ novel.source_site }}</span>
+        </div>
+
         <h1>{{ novel.title_translated || novel.title }}</h1>
-        <div v-if="novel.title_translated && novel.title !== novel.title_translated" class="byline">{{ novel.title }}</div>
-        <div class="byline">{{ novel.author || 'Unknown' }} · {{ novel.source_site }}</div>
-        <div class="desc" :class="{collapsed: !descOpen && !showOrig}">{{ novel.description_translated || novel.description }}</div>
+        <div v-if="novel.title_translated && novel.title !== novel.title_translated" class="byline orig-title">{{ novel.title }}</div>
+        <div class="byline author-byline">{{ novel.author || 'Unknown author' }}</div>
+
+        <!-- Tag Chips -->
+        <div v-if="parsedDesc.tags.length" class="hero-tags">
+          <span v-for="(t, i) in parsedDesc.tags" :key="i" class="tag-chip">{{ t }}</span>
+        </div>
+
+        <!-- Synopsis -->
+        <div class="desc" :class="{collapsed: !descOpen && !showOrig}">{{ parsedDesc.text }}</div>
         <button v-if="descLong" class="orig-toggle" @click="descOpen = !descOpen">{{ descOpen ? '▾ Show less' : '▸ Read more' }}</button>
+        
         <div v-if="novel.description_translated && novel.description !== novel.description_translated" style="margin-top:2px">
           <button class="orig-toggle" @click="showOrig = !showOrig">{{ showOrig ? '▾ Hide' : '▸ Show' }} original text</button>
           <div v-if="showOrig" class="desc desc-orig">{{ novel.description }}</div>
         </div>
-        <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <a class="btn" :href="'/novel/' + novel.id + '/chapter/' + readTarget" title="Jump to the latest translated chapter">
+
+        <!-- Action Toolbar -->
+        <div class="hero-actions">
+          <a class="btn hero-cta" :href="'/novel/' + novel.id + '/chapter/' + readTarget" title="Jump to the latest translated chapter">
             <svg class="ic"><use href="#i-book"/></svg> Read
           </a>
-          <button class="btn soft" @click="translateAll" :disabled="translatingAll"><svg class="ic"><use href="#i-sparkle"/></svg> Translate to end</button>
-          <span class="btn-actions-spacer"></span>
+          <button class="btn soft" @click="translateAll" :disabled="translatingAll">
+            <svg class="ic"><use href="#i-sparkle"/></svg> Translate to end
+          </button>
+          <a class="btn soft" :href="'/novel/' + novel.id + '/review'">
+            <svg class="ic"><use href="#i-book-open"/></svg> Story so far
+          </a>
           <label class="shelf-btn" :title="shelfLabel(shelfStatus)">
             <svg class="ic"><use :href="'#' + shelfIcon(shelfStatus)"/></svg>
             <span class="shelf-btn-label">{{ shelfLabel(shelfStatus) }}</span>
@@ -793,7 +821,6 @@
               <button v-if="driftCount > 0" class="more-item" @click="fixDrift" :disabled="fixingDrift"><svg class="ic"><use href="#i-search"/></svg> Fix {{ driftCount }} drifted</button>
               <button class="more-item" @click="exportEpub" :disabled="exportingEpub"><svg class="ic"><use href="#i-arrow-down"/></svg>{{ exportingEpub ? 'Building…' : 'Export EPUB' }}</button>
               <a v-if="epubReady" class="more-item" :href="'/api/novels/' + novel.id + '/epub-download'"><svg class="ic"><use href="#i-arrow-down"/></svg> Download EPUB</a>
-              <a class="more-item" :href="'/novel/' + novel.id + '/review'"><svg class="ic"><use href="#i-book-open"/></svg> Story so far</a>
               <div class="more-divider"></div>
               <button class="more-item danger" @click="deleteNovel" :disabled="deleting"><svg class="ic"><use href="#i-trash"/></svg> {{ deleting ? 'Deleting…' : 'Delete novel' }}</button>
             </div>
