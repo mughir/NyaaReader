@@ -10,7 +10,9 @@ services:
     volumes:
       # Persist SQLite database
       - ./data:/app/data
-      # Mount frontend (so you can edit HTML/CSS/JS without rebuilding)
+      # Mount backend, scrapers, and frontend for live updates
+      - ./backend:/app
+      - ./scrapers:/app/scrapers
       - ./frontend:/app/frontend
     environment:
       - FALLBACK_API_KEY=${FALLBACK_API_KEY}
