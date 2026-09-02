@@ -282,7 +282,6 @@ app.include_router(pages_router.router)
 def _startup_reliability_sync():
     _apply_config_to_env()
     _resume_interrupted_jobs()
-    _check_relay_health_bg()
 
 
 @app.on_event("startup")
@@ -292,10 +291,9 @@ async def _startup_reliability():
         await asyncio.to_thread(_startup_reliability_sync)
     except Exception as e:
         logger.warning(f"startup reliability failed: {e}")
-    t = threading.Thread(target=_backup_scheduler_loop, daemon=True)
-    t.start()
-    w = threading.Thread(target=_watchdog_loop, daemon=True)
-    w.start()
+    threading.Thread(target=_check_relay_health_bg, daemon=True).start()
+    threading.Thread(target=_backup_scheduler_loop, daemon=True).start()
+    threading.Thread(target=_watchdog_loop, daemon=True).start()
 
 
 if __name__ == "__main__":
