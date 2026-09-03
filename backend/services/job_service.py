@@ -98,32 +98,36 @@ def _update_job(job_id, **fields):
 
 
 def _set_batch(novel_id, kind, total, label="", args=None):
+    """Claim the batch slot for (novel_id). Serialized by _novel_lock so two
+    threads in this process can't both pass the check-then-insert window.
+    Cross-process double-start is out of scope (single-container app) — the
+    DB stall check (JOB_STALL_MINUTES) is the second line of defense."""
     from database import SessionLocal
     args_json = json.dumps(args) if args is not None else ""
-    db = SessionLocal()
-    try:
-        existing = db.query(BatchJob).filter(
-            BatchJob.novel_id == novel_id, BatchJob.running == True).order_by(
-            BatchJob.id.desc()).first()
-        if existing:
-            if existing.updated_at and (datetime.utcnow() - existing.updated_at).total_seconds() < JOB_STALL_MINUTES * 60:
-                db.close()
-                return False
-            existing.kind = kind
-            existing.total = total
-            existing.done = 0
-            existing.current_label = label
-            existing.args_json = args_json
-            db.commit()
-            db.refresh(existing)
-        else:
-            job = BatchJob(novel_id=novel_id, kind=kind, total=total, done=0,
-                           current_label=label, running=True, args_json=args_json)
-            db.add(job)
-            db.commit()
-            db.refresh(job)
-    finally:
-        db.close()
+    with _novel_lock(novel_id):
+        db = SessionLocal()
+        try:
+            existing = db.query(BatchJob).filter(
+                BatchJob.novel_id == novel_id, BatchJob.running == True).order_by(
+                BatchJob.id.desc()).first()
+            if existing:
+                if existing.updated_at and (datetime.utcnow() - existing.updated_at).total_seconds() < JOB_STALL_MINUTES * 60:
+                    return False
+                existing.kind = kind
+                existing.total = total
+                existing.done = 0
+                existing.current_label = label
+                existing.args_json = args_json
+                db.commit()
+                db.refresh(existing)
+            else:
+                job = BatchJob(novel_id=novel_id, kind=kind, total=total, done=0,
+                               current_label=label, running=True, args_json=args_json)
+                db.add(job)
+                db.commit()
+                db.refresh(job)
+        finally:
+            db.close()
     cache = _get_main_attr("_batch_cache", _batch_cache)
     cache[novel_id] = {
         "kind": kind, "total": total, "done": 0,
@@ -248,7 +252,8 @@ def _clear_batch(novel_id):
             BatchJob.novel_id == novel_id, BatchJob.running == True).all()
         for job in jobs:
             job.running = False
-            job.done = job.total
+            # Keep the real done count — faking done=total lied to the UI
+            # on stop/fail ("green done" while chapters were unfinished).
         db.commit()
     finally:
         db.close()
@@ -256,7 +261,7 @@ def _clear_batch(novel_id):
     b = cache.get(novel_id)
     if b:
         b["running"] = False
-        b["done"] = b["total"]
+        # keep b["done"] as-is (real progress), don't snap to total
 
 
 def _batch_running(novel_id: int, kind: str = None) -> bool:
@@ -744,6 +749,82 @@ def translate_titles_bg(novel_id: int):
         db.close()
 
 
+def translate_memory_bg(novel_id: int):
+    from database import SessionLocal
+    from models import NovelMemory
+    from services.novel_service import _load_glossary, _dump_glossary
+
+    db = SessionLocal()
+    try:
+        novel = db.query(Novel).filter(Novel.id == novel_id).first()
+        if not novel:
+            return
+        mem = db.query(NovelMemory).filter(NovelMemory.novel_id == novel_id).first()
+        if not mem:
+            mem = NovelMemory(novel_id=novel_id)
+            db.add(mem)
+            db.commit()
+            db.refresh(mem)
+
+        entries = _load_glossary(mem) or []
+        items_to_translate = []
+        for idx, entry in enumerate(entries):
+            src = (entry.get("source") or "").strip()
+            trans = (entry.get("translated") or "").strip()
+            if src and (not trans or trans == src):
+                items_to_translate.append((idx, src, entry.get("type", "term")))
+
+        total = len(items_to_translate)
+        set_batch_fn = _get_main_attr("_set_batch", _set_batch)
+        finish_fn = _get_main_attr("_finish_batch", _finish_batch)
+
+        if total == 0:
+            if not set_batch_fn(novel_id, "memory", 1, label="Checking memory…"):
+                return
+            finish_fn(novel_id, "AI memory & glossary up to date")
+            return
+
+        translator = _get_translator_instance()
+        if translator is None:
+            logger.error(f"translate-memory aborted (novel {novel_id}): no API key configured (set FALLBACK_API_KEY in Settings)")
+            return
+
+        if not set_batch_fn(novel_id, "memory", total):
+            return
+
+        done = 0
+        outcome = None
+        stop_req_fn = _get_main_attr("_batch_stop_requested", _batch_stop_requested)
+        bump_fn = _get_main_attr("_bump_batch", _bump_batch)
+
+        for idx, src, entry_type in items_to_translate:
+            if stop_req_fn(novel_id):
+                logger.info(f"translate-memory stopped by user (novel {novel_id})")
+                outcome = _stopped_label(done, total, "memory items translated")
+                break
+            try:
+                t = translator.translate_short(src, novel.original_language, novel.target_language)
+                if t and t.strip() and t.strip() != src:
+                    entries[idx]["translated"] = t.strip()
+                    mem.glossary_entries = _dump_glossary(entries)
+                    db.commit()
+                done += 1
+                bump_fn(novel_id, label=f"{entry_type.title()}: {src}")
+                time.sleep(0.5)
+            except RelayAuthError as e:
+                logger.error(f"translate-memory stopped: relay key rejected ({e})")
+                outcome = _auth_rejected_label(done, total, "memory items translated")
+                break
+            except Exception as e:
+                logger.warning(f"translate memory item {src} failed: {e}")
+                db.rollback()
+
+        finish_fn(novel_id, outcome or f"Translated {done}/{total} memory items")
+    finally:
+        db.close()
+
+
+
 def _retranslate_bg(novel_id: int):
     from database import SessionLocal
     from services.novel_service import _translate_chapter
@@ -877,6 +958,7 @@ def _launch_batch(novel_id, kind, args_json="") -> bool:
         "retry-failed": lambda: _get_main_attr("_retry_failed_bg", _retry_failed_bg)(novel_id),
         "epub": lambda: _get_main_attr("_export_epub_bg", _export_epub_bg)(novel_id),
         "meta": lambda: _get_main_attr("translate_novel_meta_bg", translate_novel_meta_bg)(novel_id),
+        "memory": lambda: _get_main_attr("translate_memory_bg", translate_memory_bg)(novel_id),
     }
     if kind == "match":
         needle = args.get("needle")

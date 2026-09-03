@@ -1,0 +1,35 @@
+# Build context exclusions — Docker does NOT respect .gitignore.
+# Without this, `docker build .` sends secrets/DBs as context and
+# `COPY backend/` bakes them into image layers.
+.env
+backend/.env
+*.env
+*.env.*
+*.db
+*.sqlite
+*.sqlite3
+data/
+backend/data/
+# Private scraper plugins (overlaid at build time by combine.py, never baked from repo)
+scrapers/private_*.py
+scrapers/_test_*.py
+# Dev/test scratch
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.hermes/
+.git/
+.github/
+tests/
+mock/
+benchmark_*.py
+benchmark_*.json
+rate_models.py
+summarize_bench.py
+node_modules/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.md
+!README.md

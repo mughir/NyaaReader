@@ -23,6 +23,23 @@ jobs:
       - name: Run pytest
         run: pytest
 
+      - name: Combine smoke (stub vault + missing vault paths)
+        run: |
+          python combine.py /tmp/nyaa-no-vault-here 2>&1 || test $? -eq 2
+          mkdir -p /tmp/nyaa-stub-vault/scrapers
+          echo "# stub" > /tmp/nyaa-stub-vault/scrapers/private_stub.py
+          python combine.py /tmp/nyaa-stub-vault
+          test -f scrapers/private_stub.py
+          rm scrapers/private_stub.py
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image (no secrets baked)
+        run: docker build -t nyaa-reader:test .
+
   frontend:
     runs-on: ubuntu-latest
     steps:

@@ -129,6 +129,7 @@ from services.job_service import (
     translate_novel_meta_bg,
     translate_titles_bg,
     translate_to_end_bg,
+    translate_memory_bg,
     _translate_selected_bg,
 )
 from services.novel_service import (
@@ -207,6 +208,7 @@ failed_count = translation_router.failed_count
 retry_failed = translation_router.retry_failed
 translate_titles = translation_router.translate_titles
 translate_novel_meta = translation_router.translate_novel_meta
+translate_memory = translation_router.translate_memory
 retranslate_novel = translation_router.retranslate_novel
 retranslate_match = translation_router.retranslate_match
 translate_to_end = translation_router.translate_to_end
@@ -217,6 +219,7 @@ check_updates = translation_router.check_updates
 
 batch_stop = batch_router.batch_stop
 batch_status = batch_router.batch_status
+get_dashboard_tasks = batch_router.get_dashboard_tasks
 
 get_config = config_router.get_config
 put_config = config_router.put_config

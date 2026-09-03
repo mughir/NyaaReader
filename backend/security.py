@@ -76,10 +76,22 @@ def _SESSION_SECRET() -> str:
     """Persistent HMAC secret for cookie signing (stored in data dir)."""
     f = DATA_DIR / "session_secret"
     if f.exists():
+        try:
+            os.chmod(f, 0o600)
+        except OSError:
+            pass
         return f.read_text(encoding="utf-8").strip()
     s = _secrets.token_hex(32)
     try:
-        f.write_text(s, encoding="utf-8")
+        # Atomic write + owner-only perms so a concurrent reader never sees
+        # a half-written secret and other users can't read it.
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(s, encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, f)
     except OSError as e:
         logger.warning(f"could not write session secret to disk: {e}")
     return s
@@ -91,7 +103,13 @@ def _rotate_session_secret():
     stops working immediately instead of lingering up to _SESSION_TTL."""
     f = DATA_DIR / "session_secret"
     try:
-        f.write_text(_secrets.token_hex(32), encoding="utf-8")
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(_secrets.token_hex(32), encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, f)
     except OSError as e:
         logger.warning(f"could not rotate session secret: {e}")
 

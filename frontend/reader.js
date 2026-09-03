@@ -179,18 +179,19 @@
       // (loaded before this script — see backend/main.py _page()) so the same
       // logic is exercised by tests/frontend/*.test.mjs instead of a copy that
       // can silently drift from what's actually shipped.
-      const { splitParagraphs, stripTitleEcho } = window.NyaaText;
+      const { splitParagraphs, stripTitleEcho, parseCharLines, parseTermLines } = window.NyaaText;
 
       const paragraphs = computed(() => {
         const t = displayText.value || "";
-        return t.split("\n").map(p => p.trim()).filter(Boolean);
+        const list = splitParagraphs(t);
+        return stripTitleEcho(list, titleTranslated.value || "");
       });
 
       // Original text, split by the same rule so the bilingual hover maps
       // between two lists built the same way.
       const originalParas = computed(() => {
         const t = original.value || "";
-        return t.split("\n").map(p => p.trim()).filter(Boolean);
+        return splitParagraphs(t);
       });
 
       // ---- per-paragraph bilingual alignment (UI 1) ----
@@ -269,6 +270,7 @@
         prefs.fontFamily = f;
         savePrefs();
         document.documentElement.setAttribute("data-font", f);
+        document.documentElement.style.setProperty("--font-read", f === "serif" ? "Georgia, 'Times New Roman', serif" : "'Segoe UI', system-ui, sans-serif");
       }
       function setLineHeight(h) {
         lineHeight.value = h;
@@ -296,13 +298,6 @@
       }
       function toggleOrig() {
         showOrig.value = !showOrig.value; prefs.showOrig = showOrig.value; savePrefs();
-      }
-      function setFontFamily(f) {
-        fontFamily.value = f; prefs.fontFamily = f; savePrefs();
-        document.documentElement.style.setProperty("--font-read", f === "serif" ? "Georgia, 'Times New Roman', serif" : "'Segoe UI', system-ui, sans-serif");
-      }
-      function setWidth(w) {
-        readerWidth.value = w; prefs.width = w; savePrefs();
       }
       function toggleFocus() {
         focusMode.value = !focusMode.value; prefs.focus = focusMode.value; savePrefs();
@@ -616,20 +611,7 @@
       }
 
       // -------- in-reader glossary/memory editor --------
-      function parseCharLines(text) {
-        return (text || "").split("\n").map(l => l.trim()).filter(Boolean).map(l => {
-          const m = l.match(/^(.*?)\s*\(([^)]+)\)\s*[-–:]\s*(.*)$/);
-          if (m) return { type: "character", translated: m[1].trim(), source: m[2].trim(), note: m[3].trim(), locked: false };
-          return { type: "character", translated: l, source: "", note: "", locked: false };
-        });
-      }
-      function parseTermLines(text) {
-        return (text || "").split("\n").map(l => l.trim()).filter(Boolean).map(l => {
-          const m = l.match(/^(.*?)\s*(?:=|->|→)\s*(.*)$/);
-          if (m) return { type: "term", source: m[1].trim(), translated: m[2].trim(), note: "", locked: false };
-          return { type: "term", source: l, translated: "", note: "", locked: false };
-        });
-      }
+      // (parse helpers live in lib/text.js — shared with novel.js)
       async function toggleMem() {
         memOpen.value = !memOpen.value;
         if (memOpen.value && gloss.value.characters.length === 0 && gloss.value.terms.length === 0 && !memLoading.value) {
@@ -889,10 +871,10 @@
   <!-- toolbar -->
   <div class="reader-toolbar">
     <div class="tool-group tg-nav">
-      <button @click="tocOpen = true" title="Chapter list (T)"><svg class="ic"><use href="#i-menu"/></svg></button>
-      <a :href="'/novel/' + novelId" title="Back to chapter list"><svg class="ic"><use href="#i-book"/></svg><span class="nav-label">Chapters</span></a>
-      <a v-if="chapterNumber > 1" :href="'/novel/' + novelId + '/chapter/' + (chapterNumber-1)" title="Previous chapter (←/P)">←</a>
-      <a v-if="chapterNumber < total" :href="'/novel/' + novelId + '/chapter/' + (chapterNumber+1)" title="Next chapter (→/N)">→</a>
+      <button @click="tocOpen = true" title="Chapter list (T)" aria-label="Chapter list"><svg class="ic"><use href="#i-menu"/></svg></button>
+      <a :href="'/novel/' + novelId" title="Back to chapter list" aria-label="Back to chapter list"><svg class="ic"><use href="#i-book"/></svg><span class="nav-label">Chapters</span></a>
+      <a v-if="chapterNumber > 1" :href="'/novel/' + novelId + '/chapter/' + (chapterNumber-1)" title="Previous chapter (←/P)" aria-label="Previous chapter">←</a>
+      <a v-if="chapterNumber < total" :href="'/novel/' + novelId + '/chapter/' + (chapterNumber+1)" title="Next chapter (→/N)" aria-label="Next chapter">→</a>
     </div>
     <div class="ttl"><strong>{{ novelTitleTranslated || DATA.novel_title }}</strong> · Ch {{ chapterNumber }}/{{ total }}</div>
     <button v-if="!isTranslated && hasOriginal" class="btn small" @click="translate"
@@ -914,15 +896,15 @@
       <button @click="setTheme('oled')" :class="{on: theme==='oled'}" title="OLED Midnight theme"><span style="font-size:11px;font-weight:700">OLED</span></button>
     </div>
     <div class="tool-group">
-      <button @click="searchOpen = !searchOpen" :class="{on: searchOpen}" title="Search novel (/)" style="font-size:13px">🔍</button>
-      <button @click="toggleBookmarks" :class="{on: bmOpen}" title="Bookmarks & highlights (B)"><svg class="ic"><use href="#i-bookmark"/></svg></button>
-      <button @click="toggleMem" :class="{on: memOpen}" title="Edit glossary / memory"><svg class="ic"><use href="#i-chip"/></svg></button>
-      <button @click="toggleOrig" :class="{on: showOrig}" title="Show original text under translation">雙語</button>
+      <button @click="searchOpen = !searchOpen" :class="{on: searchOpen}" title="Search novel (/)" aria-label="Search novel" style="font-size:13px">🔍</button>
+      <button @click="toggleBookmarks" :class="{on: bmOpen}" title="Bookmarks & highlights (B)" aria-label="Bookmarks and highlights"><svg class="ic"><use href="#i-bookmark"/></svg></button>
+      <button @click="toggleMem" :class="{on: memOpen}" title="Edit glossary / memory" aria-label="Edit glossary and memory"><svg class="ic"><use href="#i-chip"/></svg></button>
+      <button @click="toggleOrig" :class="{on: showOrig}" title="Show original text under translation" aria-label="Toggle original text">雙語</button>
     </div>
     <div class="tool-group">
-      <button @click="settingsOpen = !settingsOpen" :class="{on: settingsOpen}" title="Reading settings (S)"><svg class="ic"><use href="#i-settings"/></svg></button>
-      <button @click="toggleFocus" :class="{on: focusMode}" title="Focus mode (F)"><svg class="ic"><use href="#i-expand"/></svg></button>
-      <button @click="helpOpen = true" title="Keyboard shortcuts (?)">?</button>
+      <button @click="settingsOpen = !settingsOpen" :class="{on: settingsOpen}" title="Reading settings (S)" aria-label="Reading settings"><svg class="ic"><use href="#i-settings"/></svg></button>
+      <button @click="toggleFocus" :class="{on: focusMode}" title="Focus mode (F)" aria-label="Focus mode"><svg class="ic"><use href="#i-expand"/></svg></button>
+      <button @click="helpOpen = true" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
     </div>
   </div>
 

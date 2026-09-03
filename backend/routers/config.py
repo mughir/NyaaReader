@@ -83,9 +83,12 @@ async def put_config(payload: dict, background_tasks: BackgroundTasks = None,
             elif v and v != getattr(cfg, f):
                 if f == "auth_password":
                     password_changed = True
-                if (f.endswith("_api_key") or f == "auth_password") and len(v) < 8:
-                    stored = getattr(cfg, f) or ""
-                    if stored and stored.endswith(v):
+                if f.endswith("_api_key") or f == "auth_password":
+                    # Reject masked fragments AND any short secret outright:
+                    # a 1-char "key" is never valid and previously clobbered
+                    # the good env-backed key.
+                    stored = (getattr(cfg, f) or "")
+                    if len(v) < 8 or (stored and stored.endswith(v)):
                         continue
                 setattr(cfg, f, v)
     if "backup_enabled" in payload:

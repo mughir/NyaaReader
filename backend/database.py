@@ -12,15 +12,29 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./novel_reader.db")
 
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
-    echo=False,
-    pool_size=10,
-    max_overflow=20,
-    pool_timeout=30,
-    pool_pre_ping=True,
-)
+_is_sqlite = "sqlite" in DATABASE_URL
+
+if _is_sqlite:
+    # SQLite + QueuePool(10+20) defeats WAL and surfaces "database is locked"
+    # under parallel batches. NullPool opens a short-lived connection per
+    # session (cheap for SQLite) while busy_timeout + WAL still serialize
+    # writers. Non-SQLite URLs keep pooling.
+    from sqlalchemy.pool import NullPool
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        echo=False,
+        poolclass=NullPool,
+    )
+else:
+    engine = create_engine(
+        DATABASE_URL,
+        echo=False,
+        pool_size=10,
+        max_overflow=20,
+        pool_timeout=30,
+        pool_pre_ping=True,
+    )
 
 # SQLite concurrency safety: WAL lets readers never block writers; busy_timeout
 # makes concurrent background jobs wait instead of throwing "database is locked".
@@ -29,10 +43,9 @@ if "sqlite" in DATABASE_URL:
     # settings — SQLite does not persist any of them in the database file
     # (unlike journal_mode, which is a file-format flag). The "connect" event
     # fires for every new DBAPI connection the pool creates, which is the only
-    # way to guarantee all three apply everywhere: with pool_size=10 +
-    # max_overflow=20, setting them on just one connection (the way this code
-    # used to, via a one-off `with engine.connect()` block) leaves every other
-    # pooled connection silently running with foreign_keys=OFF, busy_timeout=0
+    # way to guarantee all three apply everywhere: with a pool, setting them
+    # on just one connection (the way this code used to, via a one-off
+    # `with engine.connect()` block) leaves every other pooled connection silently running with foreign_keys=OFF, busy_timeout=0
     # and synchronous=FULL. The busy_timeout=0 gap is what made
     # `_clean_orphans()` intermittently raise "database is locked" instead of
     # waiting: any connection other than the first-ever one had no timeout at
@@ -56,9 +69,12 @@ if "sqlite" in DATABASE_URL:
     def _set_sqlite_pragmas(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA busy_timeout=30000")
         cursor.execute("PRAGMA synchronous=NORMAL")
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+        except Exception:
+            pass
         cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

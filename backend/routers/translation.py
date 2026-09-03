@@ -36,6 +36,7 @@ from services.job_service import (
     translate_novel_meta_bg,
     translate_titles_bg,
     translate_to_end_bg,
+    translate_memory_bg,
 )
 from services.novel_service import (
     _dump_glossary,
@@ -122,7 +123,9 @@ async def translate_chapter_stream(
     """Progressive SSE streaming translation for chapter reading."""
     auth_en_fn = _get_main_attr("_auth_enabled", _auth_enabled)
     if auth_en_fn(db):
-        cookie = request.cookies.get(_COOKIE_NAME) if request else None
+        # request is injected by FastAPI; the None default only exists so the
+        # module-level alias in main.py stays importable without a Request.
+        cookie = request.cookies.get(_COOKIE_NAME) if request is not None else None
         if not cookie or not _verify_session(cookie):
             raise HTTPException(status_code=401, detail="Login required")
 
@@ -489,6 +492,38 @@ async def translate_novel_meta(novel_id: int, background_tasks: BackgroundTasks 
     return {"status": "started", "pending": pending}
 
 
+@router.post("/api/novels/{novel_id}/translate-memory")
+async def translate_memory(novel_id: int, background_tasks: BackgroundTasks = None,
+                           db: Session = Depends(get_db_session)):
+    """Background: translate untranslated glossary and memory items for a novel."""
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    if not novel:
+        raise HTTPException(status_code=404, detail="Novel not found")
+    mem = db.query(NovelMemory).filter(NovelMemory.novel_id == novel_id).first()
+    entries = _load_glossary(mem) if mem else []
+    pending = 0
+    if entries:
+        for e in entries:
+            src = (e.get("source") or "").strip()
+            trans = (e.get("translated") or "").strip()
+            if src and (not trans or trans == src):
+                pending += 1
+    elif mem and (mem.characters or mem.terms):
+        pending = 1
+
+    if pending == 0 and (not mem or (not mem.characters and not mem.terms and not entries)):
+        return {"status": "none", "pending": 0}
+
+    async_lock_fn = _get_main_attr("_async_novel_lock", _async_novel_lock)
+    batch_run_fn = _get_main_attr("_batch_running", _batch_running)
+    async with async_lock_fn(novel_id):
+        if batch_run_fn(novel_id):
+            return {"status": "already_running", "pending": 0}
+        mem_fn = _get_main_attr("translate_memory_bg", translate_memory_bg)
+        background_tasks.add_task(mem_fn, novel_id)
+    return {"status": "started", "pending": pending or 1}
+
+
 @router.post("/api/novels/{novel_id}/retranslate")
 async def retranslate_novel(novel_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db_session)):
     """Re-translate all already-translated chapters in the background."""
@@ -624,7 +659,9 @@ async def batch_mark_read(
     updated = (db.query(Chapter)
                .filter(Chapter.novel_id == novel_id, Chapter.chapter_number.in_(req.chapters))
                .update({Chapter.is_read: req.is_read, Chapter.read_at: now}, synchronize_session="fetch"))
-    novel.read_chapters = db.query(Chapter).filter(Chapter.novel_id == novel_id, Chapter.is_read == True).count()
+    # NOTE: Novel has no read_chapters column — read counts are computed via
+    # COUNT() queries (see novels.py / pages.py). Do not assign transient
+    # attributes here; they are silently lost on commit.
     db.commit()
     return {"status": "ok", "updated": updated}
 

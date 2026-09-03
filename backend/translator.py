@@ -252,7 +252,7 @@ TRANSLATE NOW:"""
         glossary: Optional[Dict[str, str]] = None,
     ) -> TranslationResult:
         """Async wrapper for translation"""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
             self.translate,
@@ -1100,7 +1100,7 @@ class FallbackTranslator:
         return self.primary.needs_compaction(*args, **kwargs)
 
     async def translate_async(self, *args, **kwargs) -> TranslationResult:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._run, "translate", *args, **kwargs)
 
 

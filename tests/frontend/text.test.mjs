@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { splitParagraphs, stripTitleEcho, hasContent } = require("../../frontend/lib/text.js");
+const { splitParagraphs, stripTitleEcho, hasContent, parseCharLines, parseTermLines, safeCoverUrl } = require("../../frontend/lib/text.js");
 
 describe("splitParagraphs", () => {
   test("blank-line-separated prose keeps wrapped lines joined", () => {
@@ -100,5 +100,33 @@ describe("hasContent", () => {
     assert.equal(hasContent(undefined), false);
     assert.equal(hasContent(null), false);
     assert.equal(hasContent({}), false);
+  });
+});
+
+describe("parseCharLines / parseTermLines", () => {
+  test("character lines parse source/translation/note", () => {
+    const got = parseCharLines("Aria (アリア) - brave knight");
+    assert.equal(got[0].translated, "Aria");
+    assert.equal(got[0].source, "アリア");
+  });
+
+  test("term lines parse source -> translation", () => {
+    const got = parseTermLines("冒険者 -> Adventurer");
+    assert.equal(got[0].source, "冒険者");
+    assert.equal(got[0].translated, "Adventurer");
+  });
+});
+
+describe("safeCoverUrl", () => {
+  test("allows http(s) and site-relative covers", () => {
+    assert.equal(safeCoverUrl("https://cdn.example/c.jpg"), "https://cdn.example/c.jpg");
+    assert.equal(safeCoverUrl("/covers/1.jpg"), "/covers/1.jpg");
+  });
+
+  test("rejects javascript:, non-image data:, and CSS breakouts", () => {
+    assert.equal(safeCoverUrl("javascript:alert(1)"), "");
+    assert.equal(safeCoverUrl("data:text/html,<h1>x</h1>"), "");
+    assert.equal(safeCoverUrl("https://x/y.jpg');background:url(evil)"), "");
+    assert.equal(safeCoverUrl(""), "");
   });
 });
