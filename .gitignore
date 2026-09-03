@@ -42,11 +42,13 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Session notes (local only — never commit)
-
 # Session notes (local only — never commit). README.md stays tracked.
+# RELIABILITY_AUDIT.md + docs/ are whitelisted: they justify test design
+# and architecture invariants, so they must survive and be reviewable.
 *.md
 !README.md
+!RELIABILITY_AUDIT.md
+!docs/
 
 # local planning docs
 .hermes/

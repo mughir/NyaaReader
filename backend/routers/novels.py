@@ -2,6 +2,7 @@
 Novel-level endpoints (CRUD, search, export, cover, settings, progress, shelf, stats).
 """
 from datetime import datetime
+import html as _html
 import logging
 import os
 from pathlib import Path
@@ -44,6 +45,28 @@ def _get_main_attr(name: str, fallback):
     if main_mod is not None and hasattr(main_mod, name):
         return getattr(main_mod, name)
     return fallback
+
+
+def _build_search_snippet(content: str, query: str, window_before: int = 80, window_after: int = 160) -> str:
+    """Build a search snippet with HTML-escaped text + a single safe <mark>.
+
+    Snippets are rendered with v-html on the frontend, so raw chapter text
+    must NEVER be interpolated as HTML — escape first, then highlight the
+    (escaped) query. Only the <mark class="search-hl"> tag we emit survives.
+    """
+    text_str = content or ""
+    idx = text_str.lower().find(query.lower())
+    if idx < 0:
+        idx = 0
+    start = max(0, idx - window_before)
+    end = min(len(text_str), idx + len(query) + window_after)
+    raw = text_str[start:end]
+    escaped = _html.escape(raw)
+    # Highlight on the escaped text (query itself escaped first so a query
+    # like "<img>" can't inject markup).
+    pattern = re.compile(re.escape(_html.escape(query)), re.IGNORECASE)
+    hl = pattern.sub(r'<mark class="search-hl">\g<0></mark>', escaped)
+    return ("…" if start > 0 else "") + hl + ("…" if end < len(text_str) else "")
 
 
 router = APIRouter(tags=["novels"])
@@ -288,19 +311,13 @@ async def search_novel(novel_id: int, payload: dict, db: Session = Depends(get_d
                 for row in rows:
                     ch_num = row[0]
                     title = row[1] or f"Chapter {ch_num}"
-                    snippet = row[2] or ""
                     content = row[3] or ""
                     if q.lower() not in content.lower() and q.lower() not in title.lower():
                         continue
                     cnt = content.lower().count(q.lower())
-                    if '<mark' not in snippet or q.lower() not in snippet.lower():
-                        idx = content.lower().find(q.lower())
-                        start = max(0, idx - 80)
-                        end = min(len(content), idx + len(q) + 160)
-                        raw = content[start:end]
-                        pattern = re.compile(re.escape(q), re.IGNORECASE)
-                        hl = pattern.sub(r'<mark class="search-hl">\g<0></mark>', raw)
-                        snippet = ("…" if start > 0 else "") + hl + ("…" if end < len(content) else "")
+                    # Never trust the FTS snippet() raw HTML or raw chapter
+                    # text — rebuild escaped via the helper (XSS-safe v-html).
+                    snippet = _build_search_snippet(content, q)
                     results.append({
                         "chapter_number": ch_num,
                         "title": title,
@@ -321,17 +338,7 @@ async def search_novel(novel_id: int, payload: dict, db: Session = Depends(get_d
                     .limit(50).all())
         for ch in chapters:
             text_str = ch.translated_content or ""
-            idx = text_str.lower().find(q.lower())
-            if idx < 0:
-                idx = text_str.find(q)
-            if idx < 0:
-                idx = 0
-            start = max(0, idx - 80)
-            end = min(len(text_str), idx + len(q) + 160)
-            raw_snippet = text_str[start:end]
-            pattern = re.compile(re.escape(q), re.IGNORECASE)
-            hl_snippet = pattern.sub(r'<mark class="search-hl">\g<0></mark>', raw_snippet)
-            snippet = ("…" if start > 0 else "") + hl_snippet + ("…" if end < len(text_str) else "")
+            snippet = _build_search_snippet(text_str, q)
             results.append({
                 "chapter_number": ch.chapter_number,
                 "title": ch.title_translated or ch.title or f"Chapter {ch.chapter_number}",

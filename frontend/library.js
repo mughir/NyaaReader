@@ -69,10 +69,13 @@
       function readPct(n) {
         return n.total_chapters > 0 ? Math.round(((n.read_chapters || 0) / n.total_chapters) * 100) : 0;
       }
-      // Cover fallback: gradient + initial when no image
+      // Cover fallback: gradient + initial when no image. safeCoverUrl lives
+      // in lib/text.js — cover_url is scraped og:image (untrusted).
+      const safeCoverUrl = (window.NyaaText && window.NyaaText.safeCoverUrl)
+        || ((u) => { const s = String(u || "").replace(/[\s'"();]/g, ""); return /^https?:\/\//.test(s) || s[0] === "/" ? s : ""; });
       function coverStyle(n) {
-        if (n.cover_url) {
-          const safe = String(n.cover_url).replace(/[\s'"();]/g, "");
+        const safe = safeCoverUrl(n.cover_url);
+        if (safe) {
           return { backgroundImage: `url(${safe})`, backgroundSize: "cover", backgroundPosition: "center" };
         }
         const hue = (n.id * 47) % 360;

@@ -62,5 +62,36 @@
     return (c && c.has_content !== undefined) ? !!c.has_content : !!(c && c.original_content);
   }
 
-  return { splitParagraphs: splitParagraphs, stripTitleEcho: stripTitleEcho, hasContent: hasContent };
+  // Best-effort parse of free-text memory into glossary rows (legacy / no
+  // structured data). Single copy — novel.js and reader.js both use these.
+  function parseCharLines(text) {
+    return (text || "").split("\n").map(function (l) { return l.trim(); }).filter(Boolean).map(function (l) {
+      var m = l.match(/^(.*?)\s*\(([^)]+)\)\s*[-–:]\s*(.*)$/);
+      if (m) return { type: "character", translated: m[1].trim(), source: m[2].trim(), note: m[3].trim(), locked: false };
+      return { type: "character", translated: l, source: "", note: "", locked: false };
+    });
+  }
+  function parseTermLines(text) {
+    return (text || "").split("\n").map(function (l) { return l.trim(); }).filter(Boolean).map(function (l) {
+      var m = l.match(/^(.*?)\s*(?:=|->|→)\s*(.*)$/);
+      if (m) return { type: "term", source: m[1].trim(), translated: m[2].trim(), note: "", locked: false };
+      return { type: "term", source: l, translated: "", note: "", locked: false };
+    });
+  }
+
+  // Cover URLs come from scraped og:image — untrusted. Allow only http(s),
+  // site-relative, and data:image; drop javascript:/data:text/html and CSS
+  // breakouts like "');background:evil". Returns "" when unsafe.
+  function safeCoverUrl(u) {
+    var s = String(u == null ? "" : u).trim();
+    if (!s) return "";
+    if (/^javascript:/i.test(s) || /^data:(?!image\/)/i.test(s)) return "";
+    if (/^https?:\/\//i.test(s) || s.charAt(0) === "/" || /^data:image\//i.test(s)) {
+      if (/["'();]/.test(s)) return "";
+      return s;
+    }
+    return "";
+  }
+
+  return { splitParagraphs: splitParagraphs, stripTitleEcho: stripTitleEcho, hasContent: hasContent, parseCharLines: parseCharLines, parseTermLines: parseTermLines, safeCoverUrl: safeCoverUrl };
 });

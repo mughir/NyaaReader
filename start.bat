@@ -33,11 +33,12 @@ REM This overlays your private plugins into scrapers/ so the build has them,
 REM while the public repo stays clean.
 echo [*] Combining private scraper plugins (nyaareader-scrapper)...
 python combine.py
-if errorlevel 3 (
+set COMBINE_RC=%ERRORLEVEL%
+if %COMBINE_RC%==3 (
     REM exit code 3 = no private vault configured - the normal public case
     echo [i] No private vault found - building with public plugins only.
-) else if errorlevel 1 (
-    echo [!] combine step failed - continuing anyway (public build only).
+) else if not %COMBINE_RC%==0 (
+    echo [!] combine step failed (exit %COMBINE_RC%) - continuing anyway (public build only).
     echo     Set up the private vault to get your private site plugins.
 )
 echo.

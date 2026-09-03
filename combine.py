@@ -53,13 +53,13 @@ def main() -> int:
         print("pass the path, e.g.  python combine.py ../nyaareader-scrapper")
         return 2
 
-    src = REPO / "scrapers"
-    src.mkdir(parents=True, exist_ok=True)
-
     files = _private_files(vault)
     if not files:
         print(f"no private scraper files found in {vault / 'scrapers'}")
         return 3
+
+    src = REPO / "scrapers"
+    src.mkdir(parents=True, exist_ok=True)
 
     for f in files:
         dest = src / f.name

@@ -113,7 +113,7 @@
       // Defined in frontend/lib/text.js (loaded before this script — see
       // backend/main.py _page()), so the same logic is covered by
       // tests/frontend/*.test.mjs instead of a copy that can drift.
-      const { hasContent } = window.NyaaText;
+      const { hasContent, parseCharLines, parseTermLines, safeCoverUrl } = window.NyaaText;
 
       // Full filtered list (search + status filter)
       const filtered = computed(() => {
@@ -414,21 +414,7 @@
         }
       }
 
-      // Best-effort parse of free-text memory into rows (legacy / no structured data)
-      function parseCharLines(text) {
-        return (text || "").split("\n").map(l => l.trim()).filter(Boolean).map(l => {
-          const m = l.match(/^(.*?)\s*\(([^)]+)\)\s*[-–:]\s*(.*)$/);
-          if (m) return { type: "character", translated: m[1].trim(), source: m[2].trim(), note: m[3].trim(), locked: false };
-          return { type: "character", translated: l, source: "", note: "", locked: false };
-        });
-      }
-      function parseTermLines(text) {
-        return (text || "").split("\n").map(l => l.trim()).filter(Boolean).map(l => {
-          const m = l.match(/^(.*?)\s*(?:=|->|→)\s*(.*)$/);
-          if (m) return { type: "term", source: m[1].trim(), translated: m[2].trim(), note: "", locked: false };
-          return { type: "term", source: l, translated: "", note: "", locked: false };
-        });
-      }
+      // Best-effort parse helpers live in lib/text.js (shared with reader.js)
 
       function addChar() { gloss.value.characters.push({ type: "character", source: "", translated: "", note: "", locked: false }); }
       function addTerm() { gloss.value.terms.push({ type: "term", source: "", translated: "", note: "", locked: false }); }
@@ -707,7 +693,7 @@
         } catch (e) { error.value = "Batch mark failed: " + e.message; }
       }
 
-      return { novel, chapters, q, filter, fetching, deleting, error, note, hasContent,
+      return { novel, chapters, q, filter, fetching, deleting, error, note, hasContent, safeCoverUrl,
                translatedCount, visible, filtered, fetchMore, deleteNovel, ensureMetaTranslated,
                searchMode, contentResults, contentSearching, contentSearched,
                searchContent, setSearchMode,
@@ -755,14 +741,14 @@
   </header>
 
   <div class="container">
-    <div class="hero" :class="{ 'has-bg': !!novel.cover_url }">
+    <div class="hero" :class="{ 'has-bg': !!safeCoverUrl(novel.cover_url) }">
       <!-- blurred cover backdrop -->
-      <div class="hero-bg-clip" v-if="novel.cover_url">
-        <div class="hero-bg" :style="{ backgroundImage: 'url(' + novel.cover_url + ')' }"></div>
+      <div class="hero-bg-clip" v-if="safeCoverUrl(novel.cover_url)">
+        <div class="hero-bg" :style="safeCoverUrl(novel.cover_url) ? { backgroundImage: 'url(' + safeCoverUrl(novel.cover_url) + ')' } : {}"></div>
       </div>
       <div class="hero-left">
         <div class="hero-cover">
-          <img v-if="novel.cover_url" class="cover" :src="novel.cover_url" :alt="novel.title">
+          <img v-if="safeCoverUrl(novel.cover_url)" class="cover" :src="safeCoverUrl(novel.cover_url)" :alt="novel.title">
           <div v-else class="cover" style="display:flex;align-items:center;justify-content:center;font-size:44px">📖</div>
         </div>
         <div class="hero-cover-btns" v-if="!generatingCover && !uploadingCover">
