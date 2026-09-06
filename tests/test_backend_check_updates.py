@@ -175,3 +175,26 @@ class TestOutcomeIsAlwaysReported:
         job = db.query(BatchJob).filter(BatchJob.novel_id == novel_id).order_by(BatchJob.id.desc()).first()
         db.close()
         assert "Added 3" in job.current_label
+
+    def test_check_updates_can_be_cancelled_by_user(self, client, monkeypatch):
+        novel_id = _seed_novel(client, "Cancel Check", "manual://cancel-check-1",
+                              n_chapters=5, n_translated=5)
+        base = "https://test-site.example/%d" % novel_id
+        monkeypatch.setattr(scrapers, "get_scraper_for_url", lambda url: _FakeScraper(base, total=10))
+        monkeypatch.setattr(app_module, "_fetch_chapter_content_sync",
+                            lambda url, polite_delay=True: ChapterData(number=0, title="", content="txt", url=url, word_count=1))
+        
+        # Request batch stop during the first chapter translation
+        def _mock_translate(nid, ch_num, quality="balanced"):
+            app_module._request_batch_stop(nid)
+
+        monkeypatch.setattr(app_module, "_translate_chapter_bg", _mock_translate)
+
+        app_module.check_updates_bg(novel_id)
+
+        db = SessionLocal()
+        job = db.query(BatchJob).filter(BatchJob.novel_id == novel_id).order_by(BatchJob.id.desc()).first()
+        db.close()
+        assert job is not None
+        assert "Stopped by user" in job.current_label
+

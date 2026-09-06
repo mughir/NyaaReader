@@ -305,16 +305,27 @@ def translate_novel_meta_bg(novel_id: int):
             outcome = "Stopped by user"
         else:
             try:
+                session_id = f"nyaa-novel-{novel_id}"
                 if not novel.title_translated and novel.title:
-                    t = translator.translate_short(
-                        novel.title, novel.original_language, novel.target_language)
+                    try:
+                        t = translator.translate_short(
+                            novel.title, novel.original_language, novel.target_language,
+                            session_id=session_id)
+                    except TypeError:
+                        t = translator.translate_short(
+                            novel.title, novel.original_language, novel.target_language)
                     if t and t.strip():
                         novel.title_translated = t.strip()
                         bump_fn(novel_id, label="Novel title")
                         db.commit()
                 if not novel.description_translated and novel.description:
-                    d = translator.translate_short(
-                        novel.description, novel.original_language, novel.target_language)
+                    try:
+                        d = translator.translate_short(
+                            novel.description, novel.original_language, novel.target_language,
+                            session_id=session_id)
+                    except TypeError:
+                        d = translator.translate_short(
+                            novel.description, novel.original_language, novel.target_language)
                     if d and d.strip():
                         novel.description_translated = d.strip()
                         bump_fn(novel_id, label="Synopsis")
@@ -563,27 +574,41 @@ def check_updates_bg(novel_id: int):
                     .order_by(Chapter.chapter_number)
                     .limit(5).all())
             set_batch_total_fn = _get_main_attr("_set_batch_total", _set_batch_total)
-            set_batch_total_fn(novel_id, len(todo) or 1,
-                               label=f"Added {added} new chapter(s)")
+            initial_label = f"Translating {len(todo)} new chapter(s)…" if todo else f"Added {added} new chapter(s)"
+            set_batch_total_fn(novel_id, len(todo) or 1, label=initial_label)
             fetch_sync_fn = _get_main_attr("_fetch_chapter_content_sync", _fetch_chapter_content_sync)
             trans_bg_fn = _get_main_attr("_translate_chapter_bg", _translate_chapter_bg)
             bump_fn = _get_main_attr("_bump_batch", _bump_batch)
+            stop_req_fn = _get_main_attr("_batch_stop_requested", _batch_stop_requested)
 
+            done = 0
             for ch in todo:
+                if stop_req_fn(novel_id):
+                    logger.info(f"check-updates novel {novel_id}: stopped by user")
+                    finish_fn(novel_id, _stopped_label(done, len(todo), "new chapters translated"))
+                    return
                 try:
                     if not ch.original_content:
+                        bump_fn(novel_id, label=f"Fetching Ch {ch.chapter_number}…", done_inc=0)
                         ch_data = fetch_sync_fn(ch.source_url)
                         if ch_data and ch_data.content:
                             ch.original_content = ch_data.content
                             ch.word_count = getattr(ch_data, "word_count", 0) or 0
                             db.commit()
                     db.refresh(ch)
+                    if stop_req_fn(novel_id):
+                        logger.info(f"check-updates novel {novel_id}: stopped by user")
+                        finish_fn(novel_id, _stopped_label(done, len(todo), "new chapters translated"))
+                        return
                     if ch.original_content:
+                        bump_fn(novel_id, label=f"Translating Ch {ch.chapter_number}…", done_inc=0)
                         trans_bg_fn(novel_id, ch.chapter_number, "balanced")
+                    done += 1
                     bump_fn(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
                 except RelayAuthError as e:
                     logger.error(f"check-updates translate stopped: relay key rejected ({e})")
-                    break
+                    finish_fn(novel_id, _auth_rejected_label(done, len(todo), "new chapters translated"))
+                    return
                 except Exception as e:
                     logger.warning(f"check-updates translate ch{ch.chapter_number} failed: {e}")
             finish_fn(novel_id, f"Added {added} new chapter(s)")
@@ -728,8 +753,13 @@ def translate_titles_bg(novel_id: int):
                 outcome = _stopped_label(done, len(chapters), "titles translated")
                 break
             try:
-                t = translator.translate_short(
-                    ch.title, novel.original_language, novel.target_language)
+                try:
+                    t = translator.translate_short(
+                        ch.title, novel.original_language, novel.target_language,
+                        session_id=f"nyaa-novel-{novel_id}")
+                except TypeError:
+                    t = translator.translate_short(
+                        ch.title, novel.original_language, novel.target_language)
                 if t and t.strip() and t.strip() != ch.title.strip():
                     ch.title_translated = t.strip()
                     db.commit()
@@ -803,7 +833,13 @@ def translate_memory_bg(novel_id: int):
                 outcome = _stopped_label(done, total, "memory items translated")
                 break
             try:
-                t = translator.translate_short(src, novel.original_language, novel.target_language)
+                try:
+                    t = translator.translate_short(
+                        src, novel.original_language, novel.target_language,
+                        session_id=f"nyaa-novel-{novel_id}")
+                except TypeError:
+                    t = translator.translate_short(
+                        src, novel.original_language, novel.target_language)
                 if t and t.strip() and t.strip() != src:
                     entries[idx]["translated"] = t.strip()
                     mem.glossary_entries = _dump_glossary(entries)

@@ -184,6 +184,7 @@ async def translate_chapter_stream(
                         target_lang=novel.target_language or "en",
                         quality="balanced",
                         memory=memory,
+                        session_id=f"nyaa-novel-{novel.id}",
                     )
                     for chunk in gen:
                         q.put(chunk)

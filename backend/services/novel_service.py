@@ -132,12 +132,14 @@ def _translate_chapter(db, chapter, quality: str = "balanced", force: bool = Fal
             status_code=500,
             detail="Translation unavailable: no API key configured (set FALLBACK_API_KEY in Settings)",
         )
+    session_id = f"nyaa-novel-{novel.id}"
     result = translator.translate_with_memory(
         chapter.original_content,
         novel.original_language,
         novel.target_language,
         quality,
         memory=memory,
+        session_id=session_id,
     )
 
     if result is None or not getattr(result, "success", False):
@@ -152,7 +154,8 @@ def _translate_chapter(db, chapter, quality: str = "balanced", force: bool = Fal
     if chapter.title and not chapter.title_translated:
         try:
             translated_title = translator.translate_short(
-                chapter.title, novel.original_language, novel.target_language
+                chapter.title, novel.original_language, novel.target_language,
+                session_id=session_id,
             )
             if translated_title and translated_title.strip():
                 chapter.title_translated = translated_title.strip()

@@ -71,8 +71,14 @@ if "sqlite" in DATABASE_URL:
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA busy_timeout=30000")
         cursor.execute("PRAGMA synchronous=NORMAL")
+        journal_mode = os.getenv("SQLITE_JOURNAL_MODE")
+        if not journal_mode:
+            # On Windows host mounts inside Docker, SQLite WAL mode causes
+            # "disk I/O error" and "unable to open database file" because
+            # shared-memory/mmap locks are unsupported across 9p/virtiofs.
+            journal_mode = "DELETE" if os.path.exists("/.dockerenv") else "WAL"
         try:
-            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute(f"PRAGMA journal_mode={journal_mode}")
         except Exception:
             pass
         cursor.close()
