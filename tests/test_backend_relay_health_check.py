@@ -169,6 +169,28 @@ class TestChatGate:
         assert result["chat_suggested"] == "mimo-v2.5"
         assert "case-sensitive" in result["chat_message"]
 
+    def test_http_error_includes_status_and_relay_body(self, monkeypatch):
+        import urllib.error
+
+        class _Err:
+            def read(self):
+                return b'{"error":{"message":"model access denied"}}'
+
+        def reject_chat(req, timeout=None):
+            if req.full_url.endswith("/chat/completions"):
+                raise urllib.error.HTTPError(req.full_url, 500, "Internal Server Error", {}, _Err())
+            return _fake_models_response(["meta/muse-spark-1.3-contributor"])
+
+        monkeypatch.setattr("urllib.request.urlopen", reject_chat)
+        result = app_module._config_health_check_sync({
+            "model": "meta/muse-spark-1.3-contributor",
+            "model_2": "",
+        })
+
+        assert result["chat_ok"] is False
+        assert "HTTP 500" in result["chat_message"]
+        assert "model access denied" in result["chat_message"]
+
     def test_no_model_configured_reports_no_test_query(self, monkeypatch):
         monkeypatch.setenv("FALLBACK_MODEL", "")
         monkeypatch.setattr("urllib.request.urlopen",

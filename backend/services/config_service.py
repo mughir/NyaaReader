@@ -10,6 +10,8 @@ import urllib.request
 from datetime import datetime as _dt
 from typing import Optional
 
+from ai_provider import call_ai_provider
+
 logger = logging.getLogger("novel-reader.config")
 
 # config field -> environment variable that actually powers the translator
@@ -78,22 +80,20 @@ def _apply_config_to_env(cleared=None):
 
 def _chat_completions_sync(base: str, key: str, model: str, timeout: int = 25) -> str:
     """Send one tiny chat message ('hi') and return the reply content."""
-    url = f"{base}/chat/completions"
-    payload = _json.dumps({
+    payload = {
         "model": model,
         "messages": [{"role": "user", "content": "hi"}],
         "max_tokens": 512,
         "temperature": 0,
-    }).encode()
-    req = urllib.request.Request(url, data=payload, headers={
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-        "X-Title": "Hermes Agent",
-        "User-Agent": "HermesAgent/3.1.0",
-    })
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = _json.loads(resp.read().decode())
+    }
+    data = call_ai_provider(
+        base_url=base,
+        endpoint="/chat/completions",
+        api_key=key,
+        payload=payload,
+        session_id="nyaa-healthcheck",
+        timeout=timeout,
+    )
     content = ""
     try:
         content = data["choices"][0]["message"].get("content") or ""
@@ -112,16 +112,15 @@ def _config_health_check_sync(p: dict) -> dict:
 
     key_ok = True
     available = []
-    url = f"{base}/models"
     try:
-        req = urllib.request.Request(url, headers={
-            "Authorization": f"Bearer {key}",
-            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-            "X-Title": "Hermes Agent",
-            "User-Agent": "HermesAgent/3.1.0",
-        })
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            data = _json.loads(resp.read().decode())
+        data = call_ai_provider(
+            base_url=base,
+            endpoint="/models",
+            method="GET",
+            api_key=key,
+            session_id="nyaa-healthcheck",
+            timeout=25,
+        )
         lst = data if isinstance(data, list) else data.get("data", [])
         available = [m.get("id") if isinstance(m, dict) else str(m) for m in lst]
     except Exception as e:
@@ -155,6 +154,24 @@ def _config_health_check_sync(p: dict) -> dict:
             chat_model = bool(reply)
             if not chat_model:
                 chat_msg = f"Model '{model1}' answered with empty content — check key/quota"
+        except urllib.error.HTTPError as e:
+            # urllib's default text ("HTTP Error 500") hides the relay's
+            # useful JSON reason, which is especially misleading when /models
+            # is public but /chat/completions requires model-scoped access.
+            try:
+                detail = e.read().decode("utf-8", errors="replace").strip()
+            except Exception:
+                detail = ""
+            detail = " ".join(detail.split())[:500]
+            status = f"HTTP {e.code}"
+            chat_msg = f"Model '{model1}' failed the test query: {status}"
+            if detail:
+                chat_msg += f" — {detail}"
+            chat_model = False
+            sugg = next((a for a in available if a.lower() == model1.lower()), None)
+            if sugg and sugg != model1:
+                chat_suggested = sugg
+                chat_msg += f" Did you mean '{sugg}'? Model ids are case-sensitive."
         except Exception as e:
             chat_model = False
             chat_msg = f"Model '{model1}' failed the test query: {e}"
@@ -177,16 +194,15 @@ def _config_health_check_sync(p: dict) -> dict:
     m2_separate = m2_base and m2_key and m2_base != base
     available2 = []
     if m2_separate:
-        url2 = f"{m2_base}/models"
         try:
-            req = urllib.request.Request(url2, headers={
-                "Authorization": f"Bearer {m2_key}",
-                "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-                "X-Title": "Hermes Agent",
-                "User-Agent": "HermesAgent/3.1.0",
-            })
-            with urllib.request.urlopen(req, timeout=25) as resp:
-                data = _json.loads(resp.read().decode())
+            data = call_ai_provider(
+                base_url=m2_base,
+                endpoint="/models",
+                method="GET",
+                api_key=m2_key,
+                session_id="nyaa-healthcheck",
+                timeout=25,
+            )
             lst = data if isinstance(data, list) else data.get("data", [])
             available2 = [m.get("id") if isinstance(m, dict) else str(m) for m in lst]
         except Exception as e:

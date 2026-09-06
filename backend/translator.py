@@ -11,8 +11,10 @@ import logging
 import os
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Literal, Optional
+from urllib.parse import urlparse
 
 import google.generativeai as genai
 from dotenv import load_dotenv
@@ -20,6 +22,14 @@ from dotenv import load_dotenv
 logger = logging.getLogger("novel-reader.translator")
 
 load_dotenv()
+
+
+from ai_provider import (
+    OPENCODE_SESSION_HEADER,
+    build_relay_headers,
+    call_ai_provider,
+    is_opencode_endpoint,
+)
 
 
 class RelayAuthError(RuntimeError):
@@ -88,12 +98,12 @@ class GeminiTranslator:
         
         self.pricing = self.PRICING.get(model, {"input": 0.075, "output": 0.30})
 
-    def _generate(self, prompt: str) -> str:
+    def _generate(self, prompt: str, session_id: Optional[str] = None, **kwargs) -> str:
         """Single model call returning raw text. Overridden by the relay fallback."""
         response = self.model.generate_content(prompt)
         return response.text or ""
 
-    def _generate_stream(self, prompt: str):
+    def _generate_stream(self, prompt: str, session_id: Optional[str] = None, **kwargs):
         """Yield text chunks from the model in real time."""
         if hasattr(self, "model") and self.model:
             response = self.model.generate_content(prompt, stream=True)
@@ -101,9 +111,9 @@ class GeminiTranslator:
                 if chunk.text:
                     yield chunk.text
         else:
-            yield self._generate(prompt)
+            yield self._generate(prompt, session_id=session_id, **kwargs)
 
-    def translate_short(self, text: str, source_lang: str, target_lang: str = "en") -> str:
+    def translate_short(self, text: str, source_lang: str, target_lang: str = "en", session_id: Optional[str] = None) -> str:
         """Translate a short string (title, synopsis) — no chunking, tolerant."""
         if not text or not text.strip():
             return text or ""
@@ -120,7 +130,7 @@ class GeminiTranslator:
         )
         # NOTE: exceptions are NOT swallowed here — FallbackTranslator._run relies
         # on them to retry on the relay when the primary (Gemini) quota is empty.
-        result = self._generate(prompt).strip()
+        result = self._generate(prompt, session_id=session_id).strip()
         # Guard against the model echoing the source back (occurs under load)
         if not result or result == text.strip():
             raise RuntimeError("translate_short returned empty/echoed input")
@@ -197,11 +207,12 @@ TRANSLATE NOW:"""
         quality: Literal["fast", "balanced", "quality"] = "balanced",
         context: Optional[str] = None,
         glossary: Optional[Dict[str, str]] = None,
+        session_id: Optional[str] = None,
     ) -> TranslationResult:
         """Synchronous translation"""
         try:
             prompt = self._build_prompt(text, source_lang, target_lang, quality, context, glossary)
-            generated = self._generate(prompt)
+            generated = self._generate(prompt, session_id=session_id)
 
             if not generated:
                 return TranslationResult(
@@ -250,13 +261,14 @@ TRANSLATE NOW:"""
         quality: Literal["fast", "balanced", "quality"] = "balanced",
         context: Optional[str] = None,
         glossary: Optional[Dict[str, str]] = None,
+        session_id: Optional[str] = None,
     ) -> TranslationResult:
         """Async wrapper for translation"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
             self.translate,
-            text, source_lang, target_lang, quality, context, glossary
+            text, source_lang, target_lang, quality, context, glossary, session_id
         )
 
     def translate_chapter(
@@ -267,6 +279,7 @@ TRANSLATE NOW:"""
         quality: Literal["fast", "balanced", "quality"] = "balanced",
         previous_context: Optional[str] = None,
         glossary: Optional[Dict[str, str]] = None,
+        session_id: Optional[str] = None,
     ) -> TranslationResult:
         """Translate a full chapter (handles long text by chunking)"""
         # For now, translate in one go (Gemini 1.5 Flash has 1M token context)
@@ -274,7 +287,7 @@ TRANSLATE NOW:"""
         max_chars = 300000  # ~75k tokens, well within limits
         
         if len(text) <= max_chars:
-            return self.translate(text, source_lang, target_lang, quality, previous_context, glossary)
+            return self.translate(text, source_lang, target_lang, quality, previous_context, glossary, session_id=session_id)
         
         # Chunk long text
         chunks = self._chunk_text(text, max_chars)
@@ -285,7 +298,7 @@ TRANSLATE NOW:"""
         
         for i, chunk in enumerate(chunks):
             ctx = previous_context if i == 0 else None
-            result = self.translate(chunk, source_lang, target_lang, quality, ctx, glossary)
+            result = self.translate(chunk, source_lang, target_lang, quality, ctx, glossary, session_id=session_id)
             if not result.success:
                 return result
             translated_chunks.append(result.translated_text)
@@ -355,6 +368,7 @@ TRANSLATE NOW:"""
         quality: Literal["fast", "balanced", "quality"] = "balanced",
         memory: Optional["MemoryContext"] = None,
         glossary: Optional[Dict[str, str]] = None,
+        session_id: Optional[str] = None,
     ) -> "MemoryTranslationResult":
         """
         Translate a chapter using persistent per-novel memory.
@@ -376,7 +390,7 @@ TRANSLATE NOW:"""
             glossary=glossary or memory.terms_dict(),
         )
         try:
-            generated = self._generate(prompt)
+            generated = self._generate(prompt, session_id=session_id)
             translated = generated.strip()
             if not translated:
                 return MemoryTranslationResult(
@@ -391,7 +405,7 @@ TRANSLATE NOW:"""
 
         # Step 3: ask the model to evolve the memory from this chapter
         try:
-            update_text = self._memory_update_block(text, translated, memory, source_lang, target_lang)
+            update_text = self._memory_update_block(text, translated, memory, source_lang, target_lang, session_id=session_id)
             updated = self._parse_memory_update(update_text, memory)
         except Exception:
             # If memory update fails, keep translation (memory update is best-effort)
@@ -416,6 +430,7 @@ TRANSLATE NOW:"""
         quality: Literal["fast", "balanced", "quality"] = "balanced",
         memory: Optional["MemoryContext"] = None,
         glossary: Optional[Dict[str, str]] = None,
+        session_id: Optional[str] = None,
     ):
         """
         Stream translation deltas in real-time, then update per-novel memory.
@@ -430,7 +445,7 @@ TRANSLATE NOW:"""
         )
         accumulated = []
         try:
-            for chunk in self._generate_stream(prompt):
+            for chunk in self._generate_stream(prompt, session_id=session_id):
                 if chunk:
                     accumulated.append(chunk)
                     yield StreamChunk(delta=chunk, is_final=False)
@@ -449,7 +464,7 @@ TRANSLATE NOW:"""
             return
 
         try:
-            update_text = self._memory_update_block(text, translated, memory, source_lang, target_lang)
+            update_text = self._memory_update_block(text, translated, memory, source_lang, target_lang, session_id=session_id)
             updated = self._parse_memory_update(update_text, memory)
         except Exception:
             updated = memory
@@ -532,6 +547,7 @@ TRANSLATE NOW:"""
         memory: "MemoryContext",
         source_lang: str,
         target_lang: str,
+        session_id: Optional[str] = None,
     ) -> str:
         """Ask the model to produce the updated memory as a compact block."""
         prompt = f"""You maintain a knowledge file for a novel so future chapter translations stay consistent.
@@ -572,7 +588,7 @@ TRANSLATION:
 {translated_text[:12000]}
 """
         try:
-            return self._generate(prompt)
+            return self._generate(prompt, session_id=session_id)
         except Exception:
             return ""
 
@@ -580,7 +596,7 @@ TRANSLATION:
         """Deprecated — moved to MemoryContext.needs_compaction(). Kept for safety."""
         return memory.needs_compaction()
 
-    def compact_memory(self, memory: "MemoryContext") -> "MemoryContext":
+    def compact_memory(self, memory: "MemoryContext", session_id: Optional[str] = None) -> "MemoryContext":
         """One-shot compaction: re-summarize the whole memory file WITHOUT a new chapter.
 
         Keeps characters/terms (one line each) and LOCKED glossary entries intact; merges
@@ -610,7 +626,7 @@ OUTPUT FORMAT — a fenced JSON object with exactly these keys, nothing else:
 All values are plain strings.
 """
         try:
-            text = self._generate(prompt)
+            text = self._generate(prompt, session_id=session_id)
             if text:
                 return self._parse_memory_update(text, memory)
         except Exception as e:
@@ -878,6 +894,7 @@ class OpenAIRelayTranslator(GeminiTranslator):
         model: Optional[str] = None,
         base_url: Optional[str] = None,
         temperature: float = 0.3,
+        session_id: Optional[str] = None,
     ):
         # A base class invariant is that a `model` attribute + `pricing` exist.
         self.api_key = api_key or os.getenv("FALLBACK_API_KEY")
@@ -886,11 +903,12 @@ class OpenAIRelayTranslator(GeminiTranslator):
         self.temperature = temperature
         self.model = None  # not used; kept for interface parity
         self.pricing = {"input": 0.10, "output": 0.40}  # rough estimate
+        self.session_id = session_id or f"nyaa-sess-{uuid.uuid4().hex[:12]}"
         if not self.api_key:
             raise ValueError("Fallback API key required (FALLBACK_API_KEY)")
 
-    def _generate(self, prompt: str) -> str:
-        """POST the prompt to the OpenAI-compatible relay.
+    def _generate(self, prompt: str, session_id: Optional[str] = None, **kwargs) -> str:
+        """POST the prompt to the OpenAI-compatible relay via call_ai_provider.
 
         Retries transient failures (empty reply, 429 rate-limit, 5xx) with a
         short exponential backoff. Hard failures (401/403 auth) raise
@@ -908,24 +926,18 @@ class OpenAIRelayTranslator(GeminiTranslator):
                 "temperature": self.temperature,
                 "max_tokens": 8192,
             }
-            req = urllib.request.Request(
-                f"{self.base_url}/chat/completions",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self.api_key}",
-                    # Required by the relay (403 without these)
-                    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-                    "X-Title": "Hermes Agent",
-                    "User-Agent": "HermesAgent/3.1.0",
-                },
-            )
             try:
-                with urllib.request.urlopen(req, timeout=180) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
+                data = call_ai_provider(
+                    base_url=self.base_url,
+                    endpoint="/chat/completions",
+                    api_key=self.api_key,
+                    payload=payload,
+                    session_id=session_id or self.session_id,
+                    timeout=180,
+                )
                 try:
                     content = data["choices"][0]["message"].get("content") or ""
-                except (KeyError, IndexError):
+                except (KeyError, IndexError, TypeError):
                     raise RuntimeError(f"Unexpected relay response: {str(data)[:300]}")
                 if content.strip():
                     return content
@@ -941,13 +953,15 @@ class OpenAIRelayTranslator(GeminiTranslator):
                                          f"Check the key in the AI router dashboard / Settings.")
                 last_err = f"relay HTTP {e.code}"
                 logger.warning(f"relay call failed (attempt {attempt + 1}): HTTP {e.code}")
+            except RelayAuthError:
+                raise
             except Exception as e:
                 last_err = str(e)
                 logger.warning(f"relay call failed (attempt {attempt + 1}): {e}")
         raise RuntimeError(f"Relay returned no content: {last_err}")
 
-    def _generate_stream(self, prompt: str):
-        """POST prompt with stream=True to the OpenAI-compatible relay and yield tokens/chunks."""
+    def _generate_stream(self, prompt: str, session_id: Optional[str] = None, **kwargs):
+        """POST prompt with stream=True via call_ai_provider and yield tokens/chunks."""
         payload = {
             "model": self.model_name,
             "messages": [{"role": "user", "content": prompt}],
@@ -955,41 +969,25 @@ class OpenAIRelayTranslator(GeminiTranslator):
             "max_tokens": 8192,
             "stream": True,
         }
-        req = urllib.request.Request(
-            f"{self.base_url}/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-                "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-                "X-Title": "Hermes Agent",
-                "User-Agent": "HermesAgent/3.1.0",
-            },
-        )
         try:
-            with urllib.request.urlopen(req, timeout=180) as resp:
-                for line in resp:
-                    line_str = line.decode("utf-8").strip()
-                    if not line_str or not line_str.startswith("data:"):
-                        continue
-                    data_str = line_str[5:].strip()
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        chunk_json = json.loads(data_str)
-                        delta = chunk_json.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            yield content
-                    except Exception:
-                        continue
+            for delta in call_ai_provider(
+                base_url=self.base_url,
+                endpoint="/chat/completions",
+                api_key=self.api_key,
+                payload=payload,
+                session_id=session_id or self.session_id,
+                timeout=180,
+                stream=True,
+            ):
+                if delta:
+                    yield delta
         except urllib.error.HTTPError as e:
             if e.code in (401, 403):
                 raise RelayAuthError(f"Relay rejected the API key (HTTP {e.code})")
-            yield self._generate(prompt)
+            yield self._generate(prompt, session_id=session_id)
         except Exception as e:
             logger.warning(f"relay streaming error ({e}), falling back to standard generate")
-            yield self._generate(prompt)
+            yield self._generate(prompt, session_id=session_id)
 
 
 class FallbackTranslator:
