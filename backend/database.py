@@ -120,8 +120,13 @@ def _init_fts():
                     VALUES (new.id, new.novel_id, new.chapter_number, coalesce(new.title_translated, ''), coalesce(new.translated_content, ''));
                 END
             """))
+            # Recreated on every start (drop+create, not IF NOT EXISTS) so
+            # upgrades take effect: fire only when the *indexed text columns*
+            # change. Without the column list, every read-progress UPDATE
+            # (is_read etc.) re-tokenized the full chapter text.
+            conn.execute(text("DROP TRIGGER IF EXISTS chapters_fts_au"))
             conn.execute(text("""
-                CREATE TRIGGER IF NOT EXISTS chapters_fts_au AFTER UPDATE ON chapters
+                CREATE TRIGGER chapters_fts_au AFTER UPDATE OF translated_content, title_translated ON chapters
                 BEGIN
                     DELETE FROM chapters_fts WHERE chapter_id = old.id;
                     INSERT INTO chapters_fts(chapter_id, novel_id, chapter_number, title_translated, translated_content)

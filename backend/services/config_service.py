@@ -211,7 +211,9 @@ def _config_health_check_sync(p: dict) -> dict:
                 "message": f"Could not reach Model 2 relay at {m2_base}: {e}",
                 "models": {"model": False},
             }
-            key_ok = False
+            # Do NOT touch `key_ok` here — it reports the PRIMARY relay and is
+            # returned at the top level; a Model-2 outage must not mark the
+            # primary key as rejected in the UI.
         else:
             def valid2(name):
                 if not name:
@@ -290,8 +292,12 @@ def _check_relay_health_bg():
         logger.warning(f"relay health check itself failed: {e}")
         return
     result["checked_at"] = _dt.utcnow().isoformat()
-    _relay_health_cache.clear()
+    # Update in place without an empty window — a concurrent /health-status
+    # read between clear() and update() would see a partial/empty cache.
     _relay_health_cache.update(result)
+    for k in list(_relay_health_cache.keys()):
+        if k not in result:
+            _relay_health_cache.pop(k, None)
     if not result.get("key_ok"):
         logger.warning(f"relay health check: {result.get('message')}")
     elif not all(result.get("models", {}).values()):

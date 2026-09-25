@@ -80,6 +80,7 @@
       const busy = ref("");          // '', 'fetching', 'translating'
       const error = ref("");
       const pollTimer = ref(null);
+      let streamEs = null; // live translate-stream EventSource, closed on unmount
       const ahead = ref({ running: false, done: 0, total: 0, label: "", kind: null });
       const stoppingAhead = ref(false);
 
@@ -89,24 +90,27 @@
       const searchResults = ref([]);
       const searching = ref(false);
       let searchDebounce = null;
+      let searchSeq = 0;
 
       watch(searchQuery, (q) => {
         if (searchDebounce) clearTimeout(searchDebounce);
         if (!q.trim()) { searchResults.value = []; return; }
         searchDebounce = setTimeout(async () => {
+          // Backend contract: POST {q} → {results:[...]} (see routers/novels.py search_novel)
+          const seq = ++searchSeq;
           searching.value = true;
           try {
             const res = await fetch(`/api/novels/${novelId}/search`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ query: q.trim(), in_text: true }),
+              body: JSON.stringify({ q: q.trim() }),
             });
             if (res.ok) {
               const d = await res.json();
-              searchResults.value = d.matches || [];
+              if (seq === searchSeq) searchResults.value = d.results || [];
             }
           } catch (e) {}
-          finally { searching.value = false; }
+          finally { if (seq === searchSeq) searching.value = false; }
         }, 280);
       });
 
@@ -343,6 +347,22 @@
               const bs = await fetch(`/api/novels/${novelId}/batch-status`).then(x => x.json());
               if (bs && bs.running) return; // keep polling quietly
             } catch (e) {}
+            // The job may have finished right at the deadline — do one final
+            // chapter check before reporting a timeout that isn't one.
+            const ch = await pollChapter();
+            if (ch && ch.is_translated) {
+              state.value = {
+                original: ch.original_content || "",
+                translated: ch.translated_content || "",
+                is_translated: true,
+                has_original: !!(ch.original_content || ""),
+              };
+              if (ch.title_translated) titleTranslated.value = ch.title_translated;
+              clearInterval(pollTimer.value);
+              busy.value = "";
+              toast("Chapter translated ✓");
+              return;
+            }
             clearInterval(pollTimer.value);
             busy.value = "";
             error.value = "Translation timed out — try again.";
@@ -403,6 +423,17 @@
             state.value.translated = "";
             let streamSuccess = false;
             const es = new EventSource(`/api/novels/${novelId}/chapters/${chapterNumber}/translate/stream`);
+            streamEs = es;
+            // Deadline: a stalled stream must not spin "Translating…" forever.
+            // The server-side worker persists its result even if the stream
+            // dies, so on timeout we switch to polling (which will see the
+            // persisted chapter) instead of firing a duplicate translate.
+            const streamDeadline = setTimeout(() => {
+              if (streamSuccess) return;
+              try { es.close(); } catch (_) {}
+              if (streamEs === es) streamEs = null;
+              if (busy.value === "translating") startPolling(4000);
+            }, 10 * 60 * 1000);
 
             es.addEventListener("init", (e) => {
               try {
@@ -423,7 +454,9 @@
 
             es.addEventListener("done", (e) => {
               streamSuccess = true;
+              clearTimeout(streamDeadline);
               es.close();
+              if (streamEs === es) streamEs = null;
               try {
                 const d = JSON.parse(e.data);
                 if (d.translated_content) state.value.translated = d.translated_content;
@@ -439,10 +472,21 @@
             });
 
             es.addEventListener("error", (e) => {
+              clearTimeout(streamDeadline);
               es.close();
-              if (!streamSuccess) {
-                fallbackTranslate();
+              if (streamEs === es) streamEs = null;
+              if (streamSuccess) return;
+              if (e && e.data) {
+                // The server itself reported a translation failure — polling
+                // won't help and an immediate retry would likely fail again.
+                busy.value = "";
+                try { error.value = JSON.parse(e.data).error || "Translation failed."; } catch (_) { error.value = "Translation failed."; }
+                return;
               }
+              // Connection dropped: the server worker keeps running and
+              // persists its result, so watch the chapter instead of paying
+              // for a second translation.
+              startPolling(4000);
             });
 
             return;
@@ -826,6 +870,7 @@
       });
       onUnmounted(() => {
         clearInterval(pollTimer.value);
+        if (streamEs) { try { streamEs.close(); } catch (e) {} streamEs = null; }
         if (aheadTimer) clearInterval(aheadTimer);
         window.removeEventListener("scroll", saveProgress);
         window.removeEventListener("scroll", onScrollImmersive);
@@ -1090,7 +1135,8 @@
       <a v-for="m in searchResults" :key="m.chapter_number" class="search-res-card"
          :href="'/novel/' + novelId + '/chapter/' + m.chapter_number">
         <div class="search-res-chap">Ch {{ m.chapter_number }} · {{ m.title_translated || m.title }}</div>
-        <div class="search-res-snippet" v-html="m.snippet || m.title"></div>
+        <div class="search-res-snippet" v-html="m.snippet" v-if="m.snippet"></div>
+        <div class="search-res-snippet" v-else>{{ m.title }}</div>
       </a>
     </div>
   </aside>

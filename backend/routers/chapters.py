@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from database import get_db_session
 from models import Bookmark, Chapter, DiaryEntry, Novel
 from schemas import ChapterManualCreate, ChapterResponse
+from scrapers.spec import count_words
 
 router = APIRouter(tags=["chapters"])
 
@@ -28,7 +29,7 @@ async def add_chapter_manual(novel_id: int, chapter_data: ChapterManualCreate,
         title=(chapter_data.title or f"Chapter {next_num}").strip(),
         source_url=chapter_data.source_url or "",
         original_content=(chapter_data.content or "").strip(),
-        word_count=len(chapter_data.content or ""),
+        word_count=count_words(chapter_data.content or ""),
         is_translated=False,
     )
     db.add(chapter)

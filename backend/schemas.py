@@ -2,7 +2,7 @@
 Pydantic request and response schemas for NyaaReader.
 """
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 from pydantic import BaseModel, HttpUrl, computed_field
 
 
@@ -93,7 +93,9 @@ class ReadingProgressResponse(BaseModel):
 
 class TranslateRequest(BaseModel):
     chapter_id: int
-    quality: str = "balanced"  # fast, balanced, quality
+    # An unknown value used to reach the translator and surface as a confusing
+    # 500 ("translation returned no result") — validate it at the boundary.
+    quality: Literal["fast", "balanced", "quality"] = "balanced"
     force_retranslate: bool = False
 
 

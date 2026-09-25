@@ -34,7 +34,9 @@ async def login(body: dict, response: Response, request: Request,
     pw = (body.get("password") or "").strip()
     if not _auth_enabled(db):
         return {"status": "disabled"}
-    if hmac.compare_digest(pw, _auth_password(db)):
+    # compare_digest only accepts ASCII str — encode to bytes so non-ASCII
+    # passwords get a clean 401 instead of an unhandled TypeError (500).
+    if hmac.compare_digest(pw.encode("utf-8"), _auth_password(db).encode("utf-8")):
         _login_guard_success(client_ip)
         token = _make_session_token()
         secure = os.getenv("COOKIE_SECURE", "").lower() in ("1", "true", "yes") \

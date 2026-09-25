@@ -11,6 +11,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from database import get_db_session, init_db
 from models import Chapter, Novel, NovelMemory, NovelSettings
 from scrapers import auto_detect_and_scrape, get_scraper_for_url
@@ -297,7 +298,13 @@ async def _create_novel_from_url(db, source_url: str, target_language: str,
         total_chapters=novel_info.total_chapters,
     )
     db.add(novel)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # Lost a race with a concurrent add of the same unique source_url —
+        # report it cleanly instead of leaking a 500.
+        db.rollback()
+        raise ValueError("Novel already exists")
 
     settings = NovelSettings(
         novel_id=novel.id,

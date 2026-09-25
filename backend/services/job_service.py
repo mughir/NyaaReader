@@ -25,6 +25,12 @@ _batch_locks = {}
 _batch_locks_guard = threading.Lock()
 _async_batch_locks = {}
 
+# novel_id -> threading.Thread of the live batch worker, so the watchdog can
+# tell a genuinely dead job from a slow LLM call (a single huge chapter can
+# legitimately exceed JOB_STALL_MINUTES without bumping updated_at).
+_job_threads = {}
+_job_threads_guard = threading.Lock()
+
 
 def _get_main_attr(name: str, fallback):
     main_mod = sys.modules.get("main")
@@ -118,6 +124,8 @@ def _set_batch(novel_id, kind, total, label="", args=None):
                 existing.done = 0
                 existing.current_label = label
                 existing.args_json = args_json
+                # A pending stop from the dead job must not stop the new one.
+                existing.stop_requested = False
                 db.commit()
                 db.refresh(existing)
             else:
@@ -610,6 +618,7 @@ def check_updates_bg(novel_id: int):
                     finish_fn(novel_id, _auth_rejected_label(done, len(todo), "new chapters translated"))
                     return
                 except Exception as e:
+                    db.rollback()
                     logger.warning(f"check-updates translate ch{ch.chapter_number} failed: {e}")
             finish_fn(novel_id, f"Added {added} new chapter(s)")
         except Exception as e:
@@ -970,6 +979,7 @@ def translate_ahead_bg(novel_id: int, after_chapter: int, count: int = 5):
                 outcome = _auth_rejected_label(done, len(next_chs), "chapters prepared")
                 break
             except Exception as e:
+                db.rollback()
                 logger.warning(f"translate-ahead ch{ch.chapter_number} failed: {e}")
         finish_fn = _get_main_attr("_finish_batch", _finish_batch)
         finish_fn(novel_id, outcome or f"Prepared {done}/{len(next_chs)} chapters ahead")
@@ -1009,10 +1019,24 @@ def _launch_batch(novel_id, kind, args_json="") -> bool:
         if after_chapter is not None:
             count = args.get("count", 5)
             targets["translate-ahead"] = lambda: _get_main_attr("translate_ahead_bg", translate_ahead_bg)(novel_id, after_chapter, count)
+    elif kind == "translate-selected":
+        chapter_numbers = args.get("chapter_numbers")
+        if chapter_numbers:
+            targets["translate-selected"] = lambda: _get_main_attr("_translate_selected_bg", _translate_selected_bg)(novel_id, chapter_numbers)
     fn = targets.get(kind)
     if fn is None:
         return False
-    t = threading.Thread(target=fn, daemon=True)
+
+    def _worker():
+        try:
+            fn()
+        finally:
+            with _job_threads_guard:
+                _job_threads.pop(novel_id, None)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    with _job_threads_guard:
+        _job_threads[novel_id] = t
     t.start()
     return True
 
@@ -1042,6 +1066,14 @@ def _watchdog_pass():
     try:
         jobs = db.query(BatchJob).filter(BatchJob.running == True).all()
         for job in jobs:
+            with _job_threads_guard:
+                worker = _job_threads.get(job.novel_id)
+            if worker is not None and worker.is_alive():
+                # The worker thread is alive — a slow chapter (huge text,
+                # quality mode, LLM retries) is not a stall. Freeing the slot
+                # here would let a second worker race the first on the same
+                # novel, so only reap jobs whose thread is actually gone.
+                continue
             if job.updated_at and (datetime.utcnow() - job.updated_at).total_seconds() > JOB_STALL_MINUTES * 60:
                 logger.warning(
                     f"Watchdog: freeing stalled {job.kind} job (novel {job.novel_id}, "
