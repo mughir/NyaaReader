@@ -104,10 +104,15 @@ if ('serviceWorker' in navigator) {{
 
 
 def _json(data) -> str:
-    """JSON for embedding inside <script> tags. Escapes "</" so a scraped
-    title like `</script><img onerror=...>` cannot break out of the script
-    block (classic JSON-in-HTML XSS)."""
-    return json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    """JSON for embedding inside <script> tags. Escapes every "<" so a scraped
+    title can neither close the script block (`</script>`) nor flip the HTML
+    parser into script-data-escaped states (`<!--<script>`), the classic
+    JSON-in-HTML XSS/parser-desync family. \\u2028/\\u2029 are escaped because
+    they are legal JSON but terminate JS string literals in pre-ES2019 parsers."""
+    return (json.dumps(data, ensure_ascii=False)
+            .replace("<", "\\u003c")
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029"))
 
 
 def _get_recap(db, novel_id: int) -> dict:

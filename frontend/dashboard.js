@@ -11,6 +11,7 @@
       const searchQuery = ref("");
       const actionBusy = ref({});
       let pollTimer = null;
+      let noticeTimer = null;
 
       const SHELF_ICON = { ongoing: "i-book-open", read_later: "i-bookmark", done: "i-check", dropped: "i-trash" };
       const SHELF_LABEL = { ongoing: "Ongoing", read_later: "Read later", done: "Done", dropped: "Dropped" };
@@ -61,6 +62,15 @@
         return !!actionBusy.value[key];
       }
 
+      // Set a notice that auto-clears — but only if no later action replaced
+      // it (each action used to arm a blanket 4s clear that erased whatever
+      // notice a subsequent action had just set).
+      function flash(msg) {
+        notice.value = msg;
+        if (noticeTimer) clearTimeout(noticeTimer);
+        noticeTimer = setTimeout(() => { if (notice.value === msg) notice.value = ""; }, 4000);
+      }
+
       async function cancelJob(novelId) {
         const key = `cancel-${novelId}`;
         setBusy(key, true);
@@ -76,7 +86,7 @@
           error.value = "Error cancelling task: " + e.message;
         } finally {
           setBusy(key, false);
-          setTimeout(() => { if (notice.value.startsWith("Cancellation")) notice.value = ""; }, 4000);
+          flash(notice.value);
         }
       }
 
@@ -86,12 +96,13 @@
         try {
           const res = await fetch(`/api/novels/${novelId}/translate-meta`, { method: "POST" });
           const d = await res.json();
+          if (!res.ok) throw new Error((d && d.detail) || "HTTP " + res.status);
           if (d.status === "started") {
-            notice.value = `Started translating novel title & synopsis (${d.pending || 2} items).`;
+            flash(`Started translating novel title & synopsis (${d.pending || 2} items).`);
           } else if (d.status === "none") {
-            notice.value = "Novel title & synopsis are already translated.";
+            flash("Novel title & synopsis are already translated.");
           } else if (d.status === "already_running") {
-            notice.value = "A task is already running for this novel.";
+            flash("A task is already running for this novel.");
           }
           await loadData();
           schedulePoll();
@@ -99,7 +110,6 @@
           error.value = "Failed to start title translation: " + e.message;
         } finally {
           setBusy(key, false);
-          setTimeout(() => { notice.value = ""; }, 4000);
         }
       }
 
@@ -109,12 +119,13 @@
         try {
           const res = await fetch(`/api/novels/${novelId}/translate-titles`, { method: "POST" });
           const d = await res.json();
+          if (!res.ok) throw new Error((d && d.detail) || "HTTP " + res.status);
           if (d.status === "started") {
-            notice.value = `Started translating ${d.pending || ""} chapter title(s).`;
+            flash(`Started translating ${d.pending || ""} chapter title(s).`);
           } else if (d.status === "none") {
-            notice.value = "All chapter titles are already translated.";
+            flash("All chapter titles are already translated.");
           } else if (d.status === "already_running") {
-            notice.value = "A task is already running for this novel.";
+            flash("A task is already running for this novel.");
           }
           await loadData();
           schedulePoll();
@@ -122,7 +133,6 @@
           error.value = "Failed to start chapter titles translation: " + e.message;
         } finally {
           setBusy(key, false);
-          setTimeout(() => { notice.value = ""; }, 4000);
         }
       }
 
@@ -132,12 +142,13 @@
         try {
           const res = await fetch(`/api/novels/${novelId}/translate-memory`, { method: "POST" });
           const d = await res.json();
+          if (!res.ok) throw new Error((d && d.detail) || "HTTP " + res.status);
           if (d.status === "started") {
-            notice.value = `Started translating AI memory & glossary (${d.pending || 1} items).`;
+            flash(`Started translating AI memory & glossary (${d.pending || 1} items).`);
           } else if (d.status === "none") {
-            notice.value = "AI memory & glossary are already up to date.";
+            flash("AI memory & glossary are already up to date.");
           } else if (d.status === "already_running") {
-            notice.value = "A task is already running for this novel.";
+            flash("A task is already running for this novel.");
           }
           await loadData();
           schedulePoll();
@@ -145,7 +156,6 @@
           error.value = "Failed to start memory translation: " + e.message;
         } finally {
           setBusy(key, false);
-          setTimeout(() => { notice.value = ""; }, 4000);
         }
       }
 
@@ -155,12 +165,13 @@
         try {
           const res = await fetch(`/api/novels/${novelId}/retry-failed`, { method: "POST" });
           const d = await res.json();
+          if (!res.ok) throw new Error((d && d.detail) || "HTTP " + res.status);
           if (d.status === "started") {
-            notice.value = `Retrying ${d.pending || ""} failed chapter(s).`;
+            flash(`Retrying ${d.pending || ""} failed chapter(s).`);
           } else if (d.status === "none") {
-            notice.value = "No failed chapters found to retry.";
+            flash("No failed chapters found to retry.");
           } else if (d.status === "already_running") {
-            notice.value = "A task is already running for this novel.";
+            flash("A task is already running for this novel.");
           }
           await loadData();
           schedulePoll();
@@ -168,7 +179,6 @@
           error.value = "Failed to retry failed chapters: " + e.message;
         } finally {
           setBusy(key, false);
-          setTimeout(() => { notice.value = ""; }, 4000);
         }
       }
 
@@ -178,12 +188,13 @@
         try {
           const res = await fetch(`/api/novels/${novelId}/translate-to-end`, { method: "POST" });
           const d = await res.json();
+          if (!res.ok) throw new Error((d && d.detail) || "HTTP " + res.status);
           if (d.status === "started") {
-            notice.value = `Translating remaining chapters in background (${d.pending || ""} pending).`;
+            flash(`Translating remaining chapters in background (${d.pending || ""} pending).`);
           } else if (d.status === "none") {
-            notice.value = "All chapters are already translated.";
+            flash("All chapters are already translated.");
           } else if (d.status === "already_running") {
-            notice.value = "A task is already running for this novel.";
+            flash("A task is already running for this novel.");
           }
           await loadData();
           schedulePoll();
@@ -191,7 +202,6 @@
           error.value = "Failed to start chapters translation: " + e.message;
         } finally {
           setBusy(key, false);
-          setTimeout(() => { notice.value = ""; }, 4000);
         }
       }
 

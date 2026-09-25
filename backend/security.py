@@ -68,19 +68,30 @@ def _auth_password(db=None) -> str:
     return (_get_config().get("auth_password") or "")
 
 
-def _sign_session(token: str) -> str:
-    return hmac.new(_SESSION_SECRET().encode(), token.encode(), hashlib.sha256).hexdigest()
+def _sign_session(payload: str) -> str:
+    return hmac.new(_SESSION_SECRET().encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+
+_secret_cache: Optional[str] = None
 
 
 def _SESSION_SECRET() -> str:
     """Persistent HMAC secret for cookie signing (stored in data dir)."""
+    global _secret_cache
+    if _secret_cache:
+        return _secret_cache
     f = DATA_DIR / "session_secret"
     if f.exists():
         try:
             os.chmod(f, 0o600)
         except OSError:
             pass
-        return f.read_text(encoding="utf-8").strip()
+        try:
+            _secret_cache = f.read_text(encoding="utf-8").strip()
+        except OSError as e:
+            logger.warning(f"could not read session secret file: {e}")
+        if _secret_cache:
+            return _secret_cache
     s = _secrets.token_hex(32)
     try:
         # Atomic write + owner-only perms so a concurrent reader never sees
@@ -94,6 +105,10 @@ def _SESSION_SECRET() -> str:
         os.replace(tmp, f)
     except OSError as e:
         logger.warning(f"could not write session secret to disk: {e}")
+    # Cache per-process even when the disk write failed, so tokens minted in
+    # this process remain verifiable (a read-only data dir would otherwise
+    # mint a fresh secret per call and break every login).
+    _secret_cache = s
     return s
 
 
@@ -101,6 +116,7 @@ def _rotate_session_secret():
     """Rotate the cookie-signing secret → invalidates EVERY outstanding session
     token. Called on password change (and password removal) so a leaked cookie
     stops working immediately instead of lingering up to _SESSION_TTL."""
+    global _secret_cache
     f = DATA_DIR / "session_secret"
     try:
         tmp = f.with_suffix(".tmp")
@@ -110,13 +126,17 @@ def _rotate_session_secret():
         except OSError:
             pass
         os.replace(tmp, f)
+        _secret_cache = None  # force re-read of the rotated secret
     except OSError as e:
         logger.warning(f"could not rotate session secret: {e}")
 
 
 def _make_session_token() -> str:
     token = _secrets.token_hex(32)
-    return f"{token}.{int(_time.time())}.{_sign_session(token)}"
+    ts = str(int(_time.time()))
+    # Sign token AND timestamp together — signing only the token would let a
+    # stolen cookie have its timestamp rewritten and never expire.
+    return f"{token}.{ts}.{_sign_session(f'{token}.{ts}')}"
 
 
 def _verify_session(cookie: str) -> bool:
@@ -132,7 +152,7 @@ def _verify_session(cookie: str) -> bool:
         return False
     if _time.time() - ts_i > _SESSION_TTL:
         return False
-    expect = hmac.new(_SESSION_SECRET().encode(), token.encode(), hashlib.sha256).hexdigest()
+    expect = hmac.new(_SESSION_SECRET().encode(), f"{token}.{ts}".encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expect, sig)
 
 

@@ -175,12 +175,16 @@
           fallback_base_url: cfg.value.fallback_base_url,
           fallback_model: cfg.value.fallback_model,
           fallback_model_2: cfg.value.fallback_model_2,
+          // Model 2's relay URL/key were collected in the UI but never sent —
+          // the values the user typed were silently dropped on every save.
+          fallback_2_base_url: cfg.value.fallback_2_base_url,
           backup_enabled: cfg.value.backup_enabled,
           backup_interval_hours: +cfg.value.backup_interval_hours || 24,
           backup_keep: +cfg.value.backup_keep || 14,
         };
         // Keys: send only when the user typed a new value
         if (cfg.value.fallback_api_key) body.fallback_api_key = cfg.value.fallback_api_key;
+        if (cfg.value.fallback_2_api_key) body.fallback_2_api_key = cfg.value.fallback_2_api_key;
         // Auth: only update when the user typed something (blank = keep current)
         if (cfg.value.auth_password) body.auth_password = cfg.value.auth_password;
         // Explicit removal: user clicked "Remove password" -> send __clear

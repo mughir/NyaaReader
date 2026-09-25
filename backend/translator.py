@@ -242,6 +242,10 @@ TRANSLATE NOW:"""
                 success=True,
             )
             
+        except RelayAuthError:
+            # Dead key / quota: abort fast so the fallback chain can engage
+            # instead of re-paying for every chapter on a rejected key.
+            raise
         except Exception as e:
             return TranslationResult(
                 translated_text="",
@@ -264,9 +268,7 @@ TRANSLATE NOW:"""
         session_id: Optional[str] = None,
     ) -> TranslationResult:
         """Async wrapper for translation"""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None,
+        return await asyncio.to_thread(
             self.translate,
             text, source_lang, target_lang, quality, context, glossary, session_id
         )
@@ -320,18 +322,26 @@ TRANSLATE NOW:"""
         paragraphs = text.split("\n\n")
         chunks = []
         current = ""
-        
+
         for para in paragraphs:
-            if len(current) + len(para) + 2 <= max_chars:
+            if len(para) > max_chars:
+                # A single paragraph longer than the budget must be hard-split
+                # or it would be emitted whole, defeating the limit.
+                if current:
+                    chunks.append(current)
+                    current = ""
+                for i in range(0, len(para), max_chars):
+                    chunks.append(para[i:i + max_chars])
+            elif len(current) + len(para) + 2 <= max_chars:
                 current += ("\n\n" if current else "") + para
             else:
                 if current:
                     chunks.append(current)
                 current = para
-        
+
         if current:
             chunks.append(current)
-        
+
         return chunks
 
     # ------------------------------------------------------------------
@@ -398,6 +408,8 @@ TRANSLATE NOW:"""
                     error="Empty response from model during translation",
                     memory=memory,
                 )
+        except RelayAuthError:
+            raise
         except Exception as e:
             return MemoryTranslationResult(
                 translated_text="", success=False, error=str(e), memory=memory,
@@ -449,6 +461,8 @@ TRANSLATE NOW:"""
                 if chunk:
                     accumulated.append(chunk)
                     yield StreamChunk(delta=chunk, is_final=False)
+        except RelayAuthError:
+            raise
         except Exception as e:
             logger.error(f"Stream generation error: {e}")
             yield StreamChunk(is_final=True, result=MemoryTranslationResult(
@@ -633,6 +647,44 @@ All values are plain strings.
             logger.warning(f"memory compaction failed: {e}")
         return memory
 
+    @staticmethod
+    def _parse_memory_update(text: str, memory: "MemoryContext"):
+        """Tolerant JSON extraction for the memory-update block."""
+        import json as _json
+        import re as _re
+        try:
+            # Try to extract the fenced JSON
+            m = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, _re.DOTALL)
+            if m:
+                data = _json.loads(m.group(1))
+            else:
+                data = _json.loads(text)
+            if not isinstance(data, dict):
+                return memory
+        except Exception:
+            return memory
+
+        def _get(key):
+            val = data.get(key)
+            return val.strip() if isinstance(val, str) else (memory.__dict__.get(key) or "")
+
+        chars = _get("characters")
+        terms = _get("terms")
+        synced_glossary = sync_glossary_entries(chars, terms, memory.glossary_entries)
+
+        updated = MemoryContext(
+            general_instruction=memory.general_instruction,
+            characters=chars,
+            terms=terms,
+            plot=_get("plot"),
+            arc_plot=_get("arc_plot"),
+            chapter_plot=_get("chapter_plot"),
+            memory=_get("memory"),
+            glossary_entries=synced_glossary or memory.glossary_entries,
+        )
+        return updated
+
+
 def sync_glossary_entries(
     characters_text: str,
     terms_text: str,
@@ -741,44 +793,6 @@ def sync_glossary_entries(
                     existing_by_trans[k_trans] = new_entry
 
     return entries
-
-
-    @staticmethod
-    def _parse_memory_update(text: str, memory: "MemoryContext"):
-        """Tolerant JSON extraction for the memory-update block."""
-        import json as _json
-        import re as _re
-        try:
-            # Try to extract the fenced JSON
-            m = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, _re.DOTALL)
-            if m:
-                data = _json.loads(m.group(1))
-            else:
-                data = _json.loads(text)
-            if not isinstance(data, dict):
-                return memory
-        except Exception:
-            return memory
-
-        def _get(key):
-            val = data.get(key)
-            return val.strip() if isinstance(val, str) else (memory.__dict__.get(key) or "")
-
-        chars = _get("characters")
-        terms = _get("terms")
-        synced_glossary = sync_glossary_entries(chars, terms, memory.glossary_entries)
-
-        updated = MemoryContext(
-            general_instruction=memory.general_instruction,
-            characters=chars,
-            terms=terms,
-            plot=_get("plot"),
-            arc_plot=_get("arc_plot"),
-            chapter_plot=_get("chapter_plot"),
-            memory=_get("memory"),
-            glossary_entries=synced_glossary or memory.glossary_entries,
-        )
-        return updated
 
 
 @dataclass
@@ -1028,6 +1042,23 @@ class FallbackTranslator:
                 logger.warning(f"Translator #{i} ({type(translator).__name__}) failed ({last_error}); trying next")
         if last_error:
             logger.error(f"All translators failed; last error: {last_error}")
+        if result is None:
+            # Every translator in the chain raised (rather than returning a
+            # failed result) — surface a failed result instead of None so
+            # callers never see a contract violation. For str-returning
+            # methods (translate_short) raise instead: callers there already
+            # handle exceptions, and a result object would violate their type.
+            if method == "translate_short":
+                raise RuntimeError(last_error or "no translator available")
+            result = TranslationResult(
+                translated_text="",
+                model_used=None,
+                input_tokens=0,
+                output_tokens=0,
+                estimated_cost=0.0,
+                success=False,
+                error=last_error or "no translator available",
+            )
         return result
 
     def translate(self, *args, **kwargs) -> TranslationResult:
@@ -1098,8 +1129,7 @@ class FallbackTranslator:
         return self.primary.needs_compaction(*args, **kwargs)
 
     async def translate_async(self, *args, **kwargs) -> TranslationResult:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._run, "translate", *args, **kwargs)
+        return await asyncio.to_thread(self._run, "translate", *args, **kwargs)
 
 
 def get_translator(

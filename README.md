@@ -172,6 +172,11 @@ sequenceDiagram
    ```
    *(Single key powers both `deepseek-v4-flash` and `gpt-5.6-luna` tiers).*
 
+   > By default Nyaa refuses to scrape hosts that resolve to private/loopback
+   > networks (SSRF protection, since scraped pages carry attacker-controllable
+   > links). If you legitimately host source sites on your LAN, set
+   > `ALLOW_PRIVATE_NETWORK=1` to opt out.
+
 2. **Start NyaaReader:**
    ```bash
    docker compose up --build -d

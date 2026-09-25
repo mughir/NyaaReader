@@ -43,13 +43,14 @@ router = APIRouter(tags=["config"])
 
 @router.get("/api/config")
 async def get_config():
-    """App config with secrets masked (show only last 4 chars)."""
+    """App config with secrets masked (API keys: last 4 chars; the login
+    password is never echoed — only a `auth_password_set` flag)."""
     cfg_fn = _get_main_attr("_get_config", _get_config)
     cfg = cfg_fn()
     masked = {}
     for k in ("gemini_api_key", "fallback_api_key", "auth_password", "fallback_2_api_key"):
         v = cfg.get(k, "")
-        masked[k] = (v[-4:] if len(v) >= 4 else "") if v else ""
+        masked[k] = (v[-4:] if len(v) >= 4 else "") if (v and k != "auth_password") else ""
         if k == "fallback_api_key" and not v:
             v = os.getenv("FALLBACK_API_KEY", "")
         masked[k + "_set"] = bool(v)
@@ -94,9 +95,21 @@ async def put_config(payload: dict, background_tasks: BackgroundTasks = None,
     if "backup_enabled" in payload:
         cfg.backup_enabled = bool(payload["backup_enabled"])
     if "backup_interval_hours" in payload:
-        cfg.backup_interval_hours = int(payload["backup_interval_hours"])
+        try:
+            hours = int(payload["backup_interval_hours"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="backup_interval_hours must be an integer")
+        if not 1 <= hours <= 168:
+            raise HTTPException(status_code=422, detail="backup_interval_hours must be 1-168")
+        cfg.backup_interval_hours = hours
     if "backup_keep" in payload:
-        cfg.backup_keep = int(payload["backup_keep"])
+        try:
+            keep = int(payload["backup_keep"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="backup_keep must be an integer")
+        if keep < 1:
+            raise HTTPException(status_code=422, detail="backup_keep must be at least 1")
+        cfg.backup_keep = keep
     db.commit()
     if password_changed:
         _rotate_session_secret()
@@ -125,9 +138,10 @@ async def config_health_status():
 
 @router.post("/api/backup")
 async def backup_now():
-    """Manual backup trigger."""
+    """Manual backup trigger. run_backup does a full SQLite online backup —
+    run it in a worker thread so a large library doesn't freeze the loop."""
     b_fn = _get_main_attr("run_backup", run_backup)
-    return b_fn()
+    return await asyncio.to_thread(b_fn)
 
 
 @router.get("/api/backups")
@@ -159,6 +173,36 @@ async def download_backup(name: str):
     return FileResponse(path, filename=safe)
 
 
+RESTORE_MAX_BYTES = 512 * 1024 * 1024  # generous cap on uploaded .db size
+
+
+def _restore_sync(db_path: str, staging: str):
+    """Blocking SQLite restore work — called via to_thread (a large library
+    would otherwise stall every concurrent request while the loop is busy)."""
+    probe = sqlite3.connect(staging)
+    try:
+        probe.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Uploaded file is not a valid SQLite database")
+    finally:
+        probe.close()
+    shutil.copy2(staging, db_path + ".restored-new")
+    live = sqlite3.connect(db_path)
+    try:
+        live.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        restored = sqlite3.connect(db_path + ".restored-new")
+        try:
+            restored.backup(live)
+        finally:
+            restored.close()
+    finally:
+        live.close()
+    try:
+        os.remove(db_path + ".restored-new")
+    except OSError as e:
+        logger.warning(f"restore: could not remove {db_path}.restored-new: {e}")
+
+
 @router.post("/api/backups/restore")
 async def restore_backup(file: UploadFile):
     """Restore the library from an uploaded backup .db file."""
@@ -169,33 +213,14 @@ async def restore_backup(file: UploadFile):
         raise HTTPException(status_code=500, detail="DB file not found")
     staging = db_path + ".restore-staging"
     try:
+        written = 0
         with open(staging, "wb") as out:
             while chunk := await file.read(1 << 20):
+                written += len(chunk)
+                if written > RESTORE_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="Backup file too large")
                 out.write(chunk)
-        probe = sqlite3.connect(staging)
-        try:
-            probe.execute("SELECT count(*) FROM sqlite_master").fetchone()
-        except Exception:
-            probe.close()
-            os.remove(staging)
-            raise HTTPException(status_code=400, detail="Uploaded file is not a valid SQLite database")
-        else:
-            probe.close()
-        shutil.copy2(staging, db_path + ".restored-new")
-        live = sqlite3.connect(db_path)
-        try:
-            live.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            restored = sqlite3.connect(db_path + ".restored-new")
-            try:
-                restored.backup(live)
-            finally:
-                restored.close()
-        finally:
-            live.close()
-        try:
-            os.remove(db_path + ".restored-new")
-        except OSError as e:
-            logger.warning(f"restore: could not remove {db_path}.restored-new: {e}")
+        await asyncio.to_thread(_restore_sync, db_path, staging)
     except HTTPException:
         raise
     except Exception as e:

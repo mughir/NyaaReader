@@ -208,25 +208,27 @@
       }, { immediate: true });
 
       // Full-text search inside translated content (UI 3)
+      let searchSeq = 0;
       async function searchContent() {
         const query = q.value.trim();
         if (query.length < 2) { contentResults.value = []; contentSearched.value = false; return; }
-        contentSearching.value = true; contentSearched.value = false;
+        const seq = ++searchSeq; // a slower response for an older query must
+        contentSearching.value = true; contentSearched.value = false; // not overwrite a newer one
         try {
           const res = await fetch(`/api/novels/${novel.value.id}/search`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ q: query }),
           });
-          if (res.ok) {
+          if (res.ok && seq === searchSeq) {
             const data = await res.json();
             contentResults.value = data.results || [];
             contentSearched.value = true;
           }
         } catch (e) {
-          contentResults.value = []; contentSearched.value = true;
+          if (seq === searchSeq) { contentResults.value = []; contentSearched.value = true; }
         } finally {
-          contentSearching.value = false;
+          if (seq === searchSeq) contentSearching.value = false;
         }
       }
       function setSearchMode(mode) {
@@ -247,7 +249,7 @@
           const d = await r.json();
           if (d.status === "started") {
             note.value = `Retranslating ${d.pending} drifted chapter(s) with locked names…`;
-            pollBatch();
+            watchBatch();
           } else if (d.status === "none") {
             note.value = "No drift found — locked names are consistent.";
             driftCount.value = 0;
@@ -273,7 +275,7 @@
           const d = await res.json();
           if (d.status === "started") {
             note.value = `Retrying ${d.pending} failed chapter(s) in the background…`;
-            pollBatch();
+            watchBatch();
           } else if (d.status === "none") {
             note.value = "No failed chapters to retry.";
             failedCount.value = 0;
@@ -293,7 +295,7 @@
           const d = await res.json();
           if (d.status === "started") {
             note.value = "Building EPUB in the background…";
-            pollBatch();
+            watchBatch();
           }
         } catch (e) {
           error.value = "EPUB export failed: " + e.message;
@@ -359,18 +361,28 @@
         }
       }
 
+      let pollingRefresh = false;
       async function pollRefresh() {
-        for (let i = 0; i < 20; i++) {
-          await new Promise(r => setTimeout(r, 5000));
-          const res = await fetch(`/api/novels/${novel.value.id}/chapters`);
-          if (!res.ok) continue;
-          const list = await res.json();
-          const prev = chapters.value;
-          const changed = list.some(c => hasContent(c) !== hasContent(prev.find(x => x.id === c.id)));
-          chapters.value = list;
-          if (changed || list.every(c => hasContent(c))) { note.value = ""; return; }
+        if (pollingRefresh) return; // repeated clicks must not stack loops
+        pollingRefresh = true;      // that clobber chapters.value mid-edit
+        try {
+          for (let i = 0; i < 20; i++) {
+            await new Promise(r => setTimeout(r, 5000));
+            let res, list;
+            try {
+              res = await fetch(`/api/novels/${novel.value.id}/chapters`);
+              if (!res.ok) continue;
+              list = await res.json();
+            } catch (e) { continue; } // transient network error — keep polling
+            const prev = chapters.value;
+            const changed = list.some(c => hasContent(c) !== hasContent(prev.find(x => x.id === c.id)));
+            chapters.value = list;
+            if (changed || list.every(c => hasContent(c))) { note.value = ""; return; }
+          }
+          note.value = "Still fetching — refresh manually if needed.";
+        } finally {
+          pollingRefresh = false;
         }
-        note.value = "Still fetching — refresh manually if needed.";
       }
 
       async function deleteNovel() {
@@ -453,7 +465,7 @@
         } finally {
           retranslating.value = false;
         }
-        pollBatch();
+        watchBatch();
       }
 
       async function translateTitles() {
@@ -469,7 +481,7 @@
         } finally {
           translatingTitles.value = false;
         }
-        pollBatch();
+        watchBatch();
       }
 
       async function translateAll() {
@@ -485,7 +497,7 @@
         } finally {
           translatingAll.value = false;
         }
-        pollBatch();
+        watchBatch();
       }
 
       async function checkUpdates() {
@@ -508,7 +520,7 @@
         } finally {
           checking.value = false;
         }
-        pollBatch();
+        watchBatch();
       }
 
       async function setShelf() {
@@ -579,6 +591,19 @@
             }
           }
         } catch (e) {}
+      }
+
+      // A job-start POST returns before the background worker registers
+      // itself; a single immediate pollBatch() used to sample "not running",
+      // take the finished branch, and never arm the interval — the whole job
+      // then ran invisibly (no progress bar, no completion reload). Poll
+      // briefly for startup; pollBatch arms its own 5s interval once running.
+      async function watchBatch() {
+        for (let i = 0; i < 6; i++) {
+          await new Promise(r => setTimeout(r, i ? 1500 : 0));
+          await pollBatch();
+          if (batch.value.running || batchTimer) return;
+        }
       }
 
       async function translateMeta() {
@@ -670,7 +695,7 @@
             note.value = `Translating ${list.length} selected chapters in background…`;
             clearSelection();
             selectMode.value = false;
-            pollBatch();
+            watchBatch();
           }
         } catch (e) { error.value = "Batch translate failed: " + e.message; }
       }

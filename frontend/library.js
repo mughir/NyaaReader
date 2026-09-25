@@ -19,16 +19,22 @@
       const urlParams = new URLSearchParams(window.location.search);
       const shelf = ref(urlParams.get("shelf") || window.__SHELF__ || "all");
       const searchQuery = ref(urlParams.get("q") || "");
-      const sortMode = ref(localStorage.getItem("novelreader.lib_sort") || "recent");
-      const viewMode = ref(localStorage.getItem("novelreader.lib_view") || "grid");
+      // localStorage can throw (private modes / storage disabled) — never let
+      // a preference read crash the whole page mount.
+      function safeGet(k, dflt) {
+        try { return localStorage.getItem(k) || dflt; } catch (e) { return dflt; }
+      }
+      function safeSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+      const sortMode = ref(safeGet("novelreader.lib_sort", "recent"));
+      const viewMode = ref(safeGet("novelreader.lib_view", "grid"));
       const url = ref("");
       const lang = ref("en");
       const adding = ref(false);
       const error = ref("");
       const notice = ref("");
 
-      watch(sortMode, (v) => localStorage.setItem("novelreader.lib_sort", v));
-      watch(viewMode, (v) => localStorage.setItem("novelreader.lib_view", v));
+      watch(sortMode, (v) => safeSet("novelreader.lib_sort", v));
+      watch(viewMode, (v) => safeSet("novelreader.lib_view", v));
 
       const filteredNovels = computed(() => {
         let list = novels.value.slice();

@@ -26,17 +26,8 @@ from security import _COOKIE_NAME, _auth_enabled, _verify_session
 from services.job_service import (
     _async_novel_lock,
     _batch_running,
-    _retry_failed_bg,
-    _retranslate_bg,
-    _retranslate_drift_bg,
-    _translate_selected_bg,
-    check_updates_bg,
-    retranslate_match_bg,
-    translate_ahead_bg,
-    translate_novel_meta_bg,
-    translate_titles_bg,
-    translate_to_end_bg,
-    translate_memory_bg,
+    _launch_batch,
+    _novel_lock,
 )
 from services.novel_service import (
     _dump_glossary,
@@ -55,6 +46,16 @@ def _get_main_attr(name: str, fallback):
     if main_mod is not None and hasattr(main_mod, name):
         return getattr(main_mod, name)
     return fallback
+
+
+def _start_batch(novel_id: int, kind: str, args: Optional[dict] = None) -> bool:
+    """Launch a long-running batch worker on its OWN thread instead of a
+    Starlette BackgroundTask: background tasks share (and can exhaust) the
+    process-wide threadpool, and a hours-long loop there starves other
+    requests' sync work. _launch_batch gives each job a dedicated daemon
+    thread, which also lets the watchdog check worker liveness."""
+    launch_fn = _get_main_attr("_launch_batch", _launch_batch)
+    return launch_fn(novel_id, kind, json.dumps(args) if args else "")
 
 
 def _get_translator_instance():
@@ -83,12 +84,24 @@ async def translate_chapter(
     chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
     if not chapter:
         raise HTTPException(status_code=404, detail="Chapter not found")
-    
+
     tr_fn = _get_main_attr("_translate_chapter", _translate_chapter)
-    chapter = await asyncio.to_thread(
-        tr_fn, db, chapter, request.quality, request.force_retranslate
-    )
-    return chapter
+    lock_fn = _get_main_attr("_novel_lock", _novel_lock)
+    batch_run_fn = _get_main_attr("_batch_running", _batch_running)
+    if batch_run_fn(chapter.novel_id):
+        raise HTTPException(
+            status_code=409,
+            detail="A batch task is running for this novel — wait for it to finish",
+        )
+
+    def _translate_locked():
+        # Serialize with the same per-novel lock the batch workers hold, so a
+        # manual click can't translate a chapter a batch is already working on
+        # (double LLM spend, last-write-wins).
+        with lock_fn(chapter.novel_id):
+            return tr_fn(db, chapter, request.quality, request.force_retranslate)
+
+    return await asyncio.to_thread(_translate_locked)
 
 
 @router.post("/api/novels/{novel_id}/chapters/{chapter_number}/translate")
@@ -150,120 +163,149 @@ async def translate_chapter_stream(
         yield f"event: init\ndata: {json.dumps({'chapter_number': chapter_number, 'title': chapter.title or f'Chapter {chapter_number}'})}\n\n"
 
         from database import SessionLocal
-        stream_db = SessionLocal()
-        try:
-            mem_row = stream_db.query(NovelMemory).filter(NovelMemory.novel_id == novel_id).first()
-            if not mem_row:
-                mem_row = NovelMemory(novel_id=novel_id)
-                stream_db.add(mem_row)
-                stream_db.flush()
 
-            memory = MemoryContext(
-                general_instruction=mem_row.general_instruction or "",
-                characters=mem_row.characters or "",
-                terms=mem_row.terms or "",
-                plot=mem_row.plot or "",
-                arc_plot=mem_row.arc_plot or "",
-                chapter_plot=mem_row.chapter_plot or "",
-                memory=mem_row.memory or "",
-                glossary_entries=_load_glossary(mem_row),
-            )
+        translator = _get_translator_instance()
+        if translator is None:
+            yield f"event: error\ndata: {json.dumps({'error': 'Translator not configured'})}\n\n"
+            return
 
-            translator = _get_translator_instance()
-            if translator is None:
-                yield f"event: error\ndata: {json.dumps({'error': 'Translator not configured'})}\n\n"
-                return
+        q = queue.Queue()
 
-            q = queue.Queue()
-
-            def _stream_worker():
-                try:
-                    gen = translator.translate_with_memory_stream(
-                        chapter.original_content,
-                        source_lang=novel.original_language or "zh",
-                        target_lang=novel.target_language or "en",
-                        quality="balanced",
-                        memory=memory,
-                        session_id=f"nyaa-novel-{novel.id}",
-                    )
-                    for chunk in gen:
-                        q.put(chunk)
-                except Exception as ex:
-                    q.put(ex)
-                finally:
-                    q.put(None)
-
-            thread = threading.Thread(target=_stream_worker, daemon=True)
-            thread.start()
-
-            full_text = ""
-            final_result = None
-
-            while True:
-                try:
-                    item = q.get_nowait()
-                except queue.Empty:
-                    await asyncio.sleep(0.04)
-                    continue
-
-                if item is None:
-                    break
-                if isinstance(item, Exception):
-                    yield f"event: error\ndata: {json.dumps({'error': str(item)})}\n\n"
-                    return
-
-                if not getattr(item, "is_final", False):
-                    delta_text = getattr(item, "delta", "")
-                    if delta_text:
-                        full_text += delta_text
-                        yield f"event: delta\ndata: {json.dumps({'delta': delta_text})}\n\n"
-                else:
-                    final_result = getattr(item, "result", None)
-
+        def _persist_stream_result(worker_db, mem_row, final_result, full_text_fallback):
+            """Save the finished translation. Runs in the worker thread on its
+            own session so a client disconnect mid-stream can no longer
+            discard the (already paid for) result."""
             final_translated_text = ""
             if final_result and getattr(final_result, "success", False) and final_result.translated_text:
                 final_translated_text = final_result.translated_text
-            elif full_text.strip():
-                final_translated_text = full_text.strip()
+            elif full_text_fallback and full_text_fallback.strip():
+                final_translated_text = full_text_fallback.strip()
+            if not final_translated_text:
+                return None, None
 
-            if final_translated_text:
-                ch_obj = stream_db.query(Chapter).filter(
-                    Chapter.novel_id == novel_id,
-                    Chapter.chapter_number == chapter_number,
-                ).first()
-                if ch_obj:
-                    ch_obj.translated_content = final_translated_text
-                    ch_obj.translated_word_count = len(final_translated_text.split())
-                    ch_obj.is_translated = True
-                    ch_obj.translation_model = getattr(final_result, "model_used", "") or getattr(translator, "model_name", "ai")
-                    ch_obj.last_error = ""
-                    ch_obj.updated_at = datetime.utcnow()
+            ch_obj = worker_db.query(Chapter).filter(
+                Chapter.novel_id == novel_id,
+                Chapter.chapter_number == chapter_number,
+            ).first()
+            if not ch_obj:
+                return None, None
+            ch_obj.translated_content = final_translated_text
+            ch_obj.translated_word_count = len(final_translated_text.split())
+            ch_obj.is_translated = True
+            ch_obj.translation_model = getattr(final_result, "model_used", "") or getattr(translator, "model_name", "ai")
+            ch_obj.last_error = ""
+            ch_obj.updated_at = datetime.utcnow()
 
-                    if ch_obj.title and not ch_obj.title_translated:
-                        try:
-                            ch_obj.title_translated = translator.translate_short(
-                                ch_obj.title, novel.original_language or "zh", novel.target_language or "en"
-                            )
-                        except Exception:
-                            ch_obj.title_translated = ch_obj.title
+            title_translated = ch_obj.title_translated
+            if ch_obj.title and not ch_obj.title_translated:
+                try:
+                    ch_obj.title_translated = translator.translate_short(
+                        ch_obj.title, novel.original_language or "zh", novel.target_language or "en"
+                    )
+                except Exception:
+                    ch_obj.title_translated = ch_obj.title
+                title_translated = ch_obj.title_translated
 
-                    if final_result and getattr(final_result, "memory", None):
-                        m = final_result.memory
-                        mem_row.characters = getattr(m, "characters", "") or ""
-                        mem_row.terms = getattr(m, "terms", "") or ""
-                        mem_row.plot = getattr(m, "plot", "") or ""
-                        mem_row.arc_plot = getattr(m, "arc_plot", "") or ""
-                        mem_row.chapter_plot = getattr(m, "chapter_plot", "") or ""
-                        mem_row.memory = getattr(m, "memory", "") or ""
-                        mem_row.glossary_entries = _dump_glossary(getattr(m, "glossary_entries", []))
+            if final_result and getattr(final_result, "memory", None) and mem_row is not None:
+                m = final_result.memory
+                mem_row.characters = getattr(m, "characters", "") or ""
+                mem_row.terms = getattr(m, "terms", "") or ""
+                mem_row.plot = getattr(m, "plot", "") or ""
+                mem_row.arc_plot = getattr(m, "arc_plot", "") or ""
+                mem_row.chapter_plot = getattr(m, "chapter_plot", "") or ""
+                mem_row.memory = getattr(m, "memory", "") or ""
+                mem_row.glossary_entries = _dump_glossary(getattr(m, "glossary_entries", []))
 
-                    stream_db.commit()
-                    yield f"event: done\ndata: {json.dumps({'status': 'completed', 'translated_content': final_translated_text, 'title_translated': ch_obj.title_translated or ch_obj.title})}\n\n"
-            else:
-                err = getattr(final_result, "error", None) or "Translation failed"
-                yield f"event: error\ndata: {json.dumps({'error': err})}\n\n"
-        finally:
-            stream_db.close()
+            worker_db.commit()
+            return final_translated_text, title_translated
+
+        def _stream_worker():
+            full_text = []
+            final_result = None
+            try:
+                # Serialize with the same per-novel lock the batch workers and
+                # the manual translate path hold — two translators on one
+                # chapter means double spend and last-write-wins.
+                lock_fn = _get_main_attr("_novel_lock", _novel_lock)
+                with lock_fn(novel_id):
+                    worker_db = SessionLocal()
+                    try:
+                        mem_row = worker_db.query(NovelMemory).filter(NovelMemory.novel_id == novel_id).first()
+                        if not mem_row:
+                            mem_row = NovelMemory(novel_id=novel_id)
+                            worker_db.add(mem_row)
+                            worker_db.flush()
+
+                        memory = MemoryContext(
+                            general_instruction=mem_row.general_instruction or "",
+                            characters=mem_row.characters or "",
+                            terms=mem_row.terms or "",
+                            plot=mem_row.plot or "",
+                            arc_plot=mem_row.arc_plot or "",
+                            chapter_plot=mem_row.chapter_plot or "",
+                            memory=mem_row.memory or "",
+                            glossary_entries=_load_glossary(mem_row),
+                        )
+
+                        gen = translator.translate_with_memory_stream(
+                            chapter.original_content,
+                            source_lang=novel.original_language or "zh",
+                            target_lang=novel.target_language or "en",
+                            quality="balanced",
+                            memory=memory,
+                            session_id=f"nyaa-novel-{novel.id}",
+                        )
+                        for chunk in gen:
+                            if getattr(chunk, "is_final", False):
+                                final_result = getattr(chunk, "result", None)
+                            else:
+                                delta_text = getattr(chunk, "delta", "")
+                                if delta_text:
+                                    full_text.append(delta_text)
+                            q.put(chunk)
+
+                        saved_text, saved_title = _persist_stream_result(
+                            worker_db, mem_row, final_result, "".join(full_text))
+                    finally:
+                        worker_db.close()
+                if saved_text is not None:
+                    q.put(("saved", saved_text, saved_title, None))
+                else:
+                    err = getattr(final_result, "error", None) or "Translation failed"
+                    q.put(("saved", None, None, err))
+            except Exception as ex:
+                q.put(ex)
+            finally:
+                q.put(None)
+
+        thread = threading.Thread(target=_stream_worker, daemon=True)
+        thread.start()
+
+        # The generator only relays; the worker owns persistence, so a client
+        # that navigates away mid-stream no longer cancels the save.
+        while True:
+            try:
+                item = q.get_nowait()
+            except queue.Empty:
+                await asyncio.sleep(0.04)
+                continue
+
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                yield f"event: error\ndata: {json.dumps({'error': str(item)})}\n\n"
+                return
+            if isinstance(item, tuple) and item and item[0] == "saved":
+                _, saved_text, saved_title, saved_err = item
+                if saved_text:
+                    yield f"event: done\ndata: {json.dumps({'status': 'completed', 'translated_content': saved_text, 'title_translated': saved_title})}\n\n"
+                else:
+                    yield f"event: error\ndata: {json.dumps({'error': saved_err or 'Translation failed'})}\n\n"
+                return
+            if not getattr(item, "is_final", False):
+                delta_text = getattr(item, "delta", "")
+                if delta_text:
+                    yield f"event: delta\ndata: {json.dumps({'delta': delta_text})}\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -343,15 +385,39 @@ async def update_memory(
     db: Session = Depends(get_db_session)
 ):
     """User edits/pre-seeds the AI memory."""
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    if not novel:
+        raise HTTPException(status_code=404, detail="Novel not found")
     mem = db.query(NovelMemory).filter(NovelMemory.novel_id == novel_id).first()
     if not mem:
         mem = NovelMemory(novel_id=novel_id)
         db.add(mem)
     for key in ("general_instruction", "characters", "terms", "plot", "arc_plot", "chapter_plot", "memory"):
         if key in payload:
-            setattr(mem, key, (payload[key] or "").strip())
+            # Coerce to str — a non-string JSON value (number/bool/null) here
+            # used to 500 on .strip() and, worse, a bad glossary payload could
+            # poison every later memory read.
+            val = payload[key]
+            if val is None:
+                val = ""
+            if not isinstance(val, str):
+                raise HTTPException(status_code=422, detail=f"{key} must be a string")
+            setattr(mem, key, val.strip())
     if "glossary_entries" in payload:
-        mem.glossary_entries = _dump_glossary(payload["glossary_entries"])
+        entries = payload["glossary_entries"]
+        if entries is None:
+            entries = []
+        if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+            raise HTTPException(status_code=422, detail="glossary_entries must be a list of objects")
+        cleaned = []
+        for e in entries:
+            item = dict(e)
+            for field in ("type", "source", "translated", "note"):
+                if field in item and not isinstance(item[field], str):
+                    item[field] = str(item[field])
+            item["locked"] = bool(item.get("locked"))
+            cleaned.append(item)
+        mem.glossary_entries = _dump_glossary(cleaned)
     mem.updated_at = datetime.utcnow()
     db.commit()
     return {"status": "ok"}
@@ -403,8 +469,7 @@ async def retranslate_drift(novel_id: int, background_tasks: BackgroundTasks = N
     async with async_lock_fn(novel_id):
         if batch_run_fn(novel_id):
             return {"status": "already_running", "pending": 0}
-        drift_bg_fn = _get_main_attr("_retranslate_drift_bg", _retranslate_drift_bg)
-        background_tasks.add_task(drift_bg_fn, novel_id, [c.chapter_number for c in targets])
+        _start_batch(novel_id, "retranslate-drift", {"chapter_numbers": [c.chapter_number for c in targets]})
     return {"status": "started", "pending": len(targets)}
 
 
@@ -440,8 +505,7 @@ async def retry_failed(novel_id: int, background_tasks: BackgroundTasks = None,
     async with async_lock_fn(novel_id):
         if batch_run_fn(novel_id):
             return {"status": "already_running", "pending": 0}
-        retry_fn = _get_main_attr("_retry_failed_bg", _retry_failed_bg)
-        background_tasks.add_task(retry_fn, novel_id)
+        _start_batch(novel_id, "retry-failed")
     return {"status": "started", "pending": count}
 
 
@@ -464,8 +528,7 @@ async def translate_titles(novel_id: int, background_tasks: BackgroundTasks = No
     async with async_lock_fn(novel_id):
         if batch_run_fn(novel_id):
             return {"status": "already_running", "pending": 0}
-        titles_fn = _get_main_attr("translate_titles_bg", translate_titles_bg)
-        background_tasks.add_task(titles_fn, novel_id)
+        _start_batch(novel_id, "titles")
     return {"status": "started", "pending": missing}
 
 
@@ -488,8 +551,7 @@ async def translate_novel_meta(novel_id: int, background_tasks: BackgroundTasks 
     async with async_lock_fn(novel_id):
         if batch_run_fn(novel_id):
             return {"status": "already_running", "pending": 0}
-        meta_fn = _get_main_attr("translate_novel_meta_bg", translate_novel_meta_bg)
-        background_tasks.add_task(meta_fn, novel_id)
+        _start_batch(novel_id, "meta")
     return {"status": "started", "pending": pending}
 
 
@@ -520,8 +582,7 @@ async def translate_memory(novel_id: int, background_tasks: BackgroundTasks = No
     async with async_lock_fn(novel_id):
         if batch_run_fn(novel_id):
             return {"status": "already_running", "pending": 0}
-        mem_fn = _get_main_attr("translate_memory_bg", translate_memory_bg)
-        background_tasks.add_task(mem_fn, novel_id)
+        _start_batch(novel_id, "memory")
     return {"status": "started", "pending": pending or 1}
 
 
@@ -540,8 +601,7 @@ async def retranslate_novel(novel_id: int, background_tasks: BackgroundTasks, db
     async with async_lock_fn(novel_id):
         if batch_run_fn(novel_id):
             return {"status": "already_running", "pending": 0}
-        retrans_fn = _get_main_attr("_retranslate_bg", _retranslate_bg)
-        background_tasks.add_task(retrans_fn, novel_id)
+        _start_batch(novel_id, "retranslate")
     return {"status": "started", "chapters": count}
 
 
@@ -569,8 +629,7 @@ async def retranslate_match(novel_id: int, payload: dict = None,
     async with async_lock_fn(novel_id):
         if batch_run_fn(novel_id):
             return {"status": "already_running", "pending": 0}
-        match_fn = _get_main_attr("retranslate_match_bg", retranslate_match_bg)
-        background_tasks.add_task(match_fn, novel_id, needle)
+        _start_batch(novel_id, "match", {"needle": needle})
     return {"status": "started", "pending": matched}
 
 
@@ -592,8 +651,7 @@ async def translate_to_end(novel_id: int, background_tasks: BackgroundTasks = No
         ).count()
         if pending == 0:
             return {"status": "none", "pending": 0}
-        to_end_fn = _get_main_attr("translate_to_end_bg", translate_to_end_bg)
-        background_tasks.add_task(to_end_fn, novel_id)
+        _start_batch(novel_id, "to-end")
     return {"status": "started", "pending": pending}
 
 
@@ -616,8 +674,7 @@ async def translate_ahead(novel_id: int, after_chapter: int,
     async with async_lock_fn(novel_id):
         if batch_run_fn(novel_id):
             return {"status": "already_running", "pending": 0}
-        ahead_fn = _get_main_attr("translate_ahead_bg", translate_ahead_bg)
-        background_tasks.add_task(ahead_fn, novel_id, after_chapter, count)
+        _start_batch(novel_id, "translate-ahead", {"after_chapter": after_chapter, "count": count})
     return {"status": "started", "pending": min(existing, count)}
 
 
@@ -639,8 +696,7 @@ async def batch_translate_selected(
     async with async_lock_fn(novel_id):
         if batch_run_fn(novel_id):
             return {"status": "already_running", "count": 0}
-        selected_fn = _get_main_attr("_translate_selected_bg", _translate_selected_bg)
-        background_tasks.add_task(selected_fn, novel_id, req.chapters)
+        _start_batch(novel_id, "translate-selected", {"chapter_numbers": req.chapters})
     return {"status": "started", "count": len(req.chapters)}
 
 
@@ -679,6 +735,5 @@ async def check_updates(novel_id: int, background_tasks: BackgroundTasks = None,
     async with async_lock_fn(novel_id):
         if batch_run_fn(novel_id):
             return {"status": "already_running"}
-        check_up_fn = _get_main_attr("check_updates_bg", check_updates_bg)
-        background_tasks.add_task(check_up_fn, novel_id)
+        _start_batch(novel_id, "updates")
     return {"status": "started"}

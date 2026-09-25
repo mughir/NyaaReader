@@ -9,18 +9,27 @@ import main as app_module
 
 
 class TestMaskedSecretGuard:
-    """GET /api/config masks every secret to its last 4 chars. Saving Settings
-    must never accept that mask back as a "new value" — the frontend keeps
-    it out of editable inputs, and the backend guards independently in case
-    it ever does leak through."""
+    """GET /api/config masks API keys to their last 4 chars and never echoes
+    the login password at all (only auth_password_set). Saving Settings must
+    never accept a mask back as a "new value" — the frontend keeps it out of
+    editable inputs, and the backend guards independently in case it ever
+    does leak through."""
 
     def test_setting_a_password_then_reading_it_back_is_masked(self, client):
         r = client.put("/api/config", json={"auth_password": "hunter2secret"})
         assert r.status_code == 200
 
         cfg = client.get("/api/config").json()
-        assert cfg["auth_password"] == "cret"
+        assert cfg["auth_password"] == "", "the login password must never be echoed, not even a fragment"
         assert cfg["auth_password_set"] is True
+
+    def test_saving_settings_without_a_password_keeps_it(self, client):
+        client.put("/api/config", json={"auth_password": "hunter2secret"})
+
+        r = client.put("/api/config", json={"backup_keep": 14})
+        assert r.status_code == 200
+        assert app_module._auth_password() == "hunter2secret"
+        assert client.get("/api/config").json()["auth_password"] == ""
 
     def test_echoing_the_mask_back_does_not_truncate_the_password(self, client):
         client.put("/api/config", json={"auth_password": "hunter2secret"})

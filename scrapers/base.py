@@ -6,12 +6,61 @@ import aiohttp
 from bs4 import BeautifulSoup
 from typing import Optional, List, Dict, Any
 from urllib.parse import urljoin, urlparse
+import ipaddress
 import logging
+import os
 import re
+import socket
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__)
+
+# Cap per-response downloads: a hostile/misbehaving source (or an SSRF'd
+# internal endpoint) could otherwise stream gigabytes into memory.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
+
+def _allow_private_network() -> bool:
+    """Opt-out for deployments that legitimately scrape LAN-hosted sources."""
+    return os.getenv("ALLOW_PRIVATE_NETWORK", "").strip().lower() in ("1", "true", "yes")
+
+
+def _assert_public_address(host: str, addr: str) -> None:
+    """Raise if `addr` (an IP resolved for `host`) is not public Internet
+    address space: blocks loopback, RFC1918, link-local (cloud metadata),
+    shared/reserved ranges. Scraped pages carry attacker-controllable URLs
+    (chapter links, LLM-extracted ones included), so the server must never
+    blindly fetch them into the internal network."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return
+    if not ip.is_global:
+        raise aiohttp.ClientError(
+            f"blocked non-public address {addr} (host {host!r}) — SSRF guard")
+
+
+class _PublicNetworkResolver(aiohttp.ThreadedResolver):
+    """DNS resolver that refuses to resolve hostnames pointing at
+    non-public address space. Enforced at the connector level so redirect
+    targets are validated too (aiohttp re-resolves every hop)."""
+
+    async def resolve(self, host, port=0, family=socket.AF_INET):
+        results = await super().resolve(host, port, family)
+        if _allow_private_network():
+            return results
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            ip = None
+        if ip is not None and not ip.is_global:
+            raise aiohttp.ClientError(
+                f"blocked non-public address {host!r} — SSRF guard")
+        for r in results:
+            addr = r["host"] if isinstance(r, dict) else getattr(r, "host", "")
+            _assert_public_address(host, addr)
+        return results
 
 
 @dataclass
@@ -45,7 +94,8 @@ class BaseScraper(ABC):
         self.last_request_time = 0
 
     async def __aenter__(self):
-        connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+        connector = aiohttp.TCPConnector(limit=10, limit_per_host=5,
+                                         resolver=_PublicNetworkResolver())
         self.session = aiohttp.ClientSession(timeout=self.timeout, connector=connector)
         return self
 
@@ -66,6 +116,19 @@ class BaseScraper(ABC):
         if not self.session:
             raise RuntimeError("Session not initialized. Use async with.")
 
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            logger.warning(f"Blocked fetch of non-http(s) URL: {url}")
+            return None
+        if not _allow_private_network():
+            try:
+                ip = ipaddress.ip_address(parsed.hostname or "")
+            except ValueError:
+                ip = None
+            if ip is not None and not ip.is_global:
+                logger.warning(f"Blocked fetch of non-public host: {url}")
+                return None
+
         default_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -80,7 +143,7 @@ class BaseScraper(ABC):
                 await self._rate_limit()
                 async with self.session.get(url, headers=default_headers) as response:
                     if response.status == 200:
-                        return await response.text()
+                        return await self._read_capped(response, url)
                     elif response.status == 404:
                         logger.warning(f"404 Not Found: {url}")
                         return None
@@ -116,6 +179,22 @@ class BaseScraper(ABC):
 
         logger.error(f"Failed to fetch {url} after {self.max_retries} attempts")
         return None
+
+    async def _read_capped(self, response: "aiohttp.ClientResponse", url: str) -> str:
+        """Read the response body, aborting past MAX_RESPONSE_BYTES instead of
+        buffering an unbounded body in memory."""
+        raw = bytearray()
+        async for chunk in response.content.iter_chunked(1 << 16):
+            raw.extend(chunk)
+            if len(raw) > MAX_RESPONSE_BYTES:
+                logger.warning(
+                    f"Response body exceeded {MAX_RESPONSE_BYTES // (1024 * 1024)} MB — truncated: {url}")
+                break
+        charset = response.charset or "utf-8"
+        try:
+            return bytes(raw).decode(charset, errors="replace")
+        except (LookupError, UnicodeDecodeError):
+            return bytes(raw).decode("utf-8", errors="replace")
 
     def _parse_html(self, html: str) -> BeautifulSoup:
         """Parse HTML with lxml parser"""

@@ -27,11 +27,10 @@ from schemas import (
 )
 from services.export_service import (
     _epub_path,
-    _export_epub_bg,
     _generate_cover_svg,
     _safe_filename,
 )
-from services.job_service import _async_novel_lock, _batch_running
+from services.job_service import _async_novel_lock, _batch_running, _launch_batch
 from services.novel_service import _create_novel_from_url, fetch_chapters_range
 
 logger = logging.getLogger("novel-reader.novels_router")
@@ -399,8 +398,8 @@ async def export_epub(novel_id: int, background_tasks: BackgroundTasks = None,
     async with async_lock_fn(novel_id):
         if batch_run_fn(novel_id):
             return {"status": "already_running"}
-        export_fn = _get_main_attr("_export_epub_bg", _export_epub_bg)
-        background_tasks.add_task(export_fn, novel_id)
+        launch_fn = _get_main_attr("_launch_batch", _launch_batch)
+        launch_fn(novel_id, "epub")
     return {"status": "started"}
 
 
@@ -451,9 +450,15 @@ async def upload_cover(novel_id: int, file: UploadFile = File(...),
     name = (file.filename or "").lower()
     if not name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
         raise HTTPException(status_code=400, detail="Unsupported image type (use png/jpg/webp/gif)")
-    data = await file.read()
-    if len(data) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Image too large (max 10 MB)")
+    # Enforce the cap while streaming — reading the whole body first would
+    # buffer an arbitrarily large upload in RAM before rejecting it.
+    MAX_COVER = 10 * 1024 * 1024
+    buf = bytearray()
+    while chunk := await file.read(1 << 20):
+        buf.extend(chunk)
+        if len(buf) > MAX_COVER:
+            raise HTTPException(status_code=413, detail="Image too large (max 10 MB)")
+    data = bytes(buf)
     if not data[:8].startswith((b"\x89PNG", b"\xff\xd8", b"GIF8")) and not data[:4].startswith(b"RIFF"):
         raise HTTPException(status_code=400, detail="Not a valid image file")
     d = DATA_DIR / "covers"
