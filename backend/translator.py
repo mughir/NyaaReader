@@ -1032,8 +1032,17 @@ class FallbackTranslator:
                     return result
                 last_error = getattr(result, "error", None) or "success=False"
             except RelayAuthError as e:
-                # Key rejected permanently — the fallback chain shares the SAME
-                # key, so don't try them. Propagate so callers stop work now.
+                # Key rejected permanently — if any subsequent fallback has a separate
+                # key (e.g. Model 2 with separate credentials), try it instead of aborting.
+                current_key = getattr(translator, "api_key", None)
+                has_different_key = any(
+                    getattr(next_tr, "api_key", None) != current_key
+                    for next_tr in chain[i+1:] if next_tr is not None
+                )
+                if has_different_key:
+                    last_error = str(e)
+                    logger.warning(f"Translator #{i} auth rejected ({e}); trying next translator with separate credentials")
+                    continue
                 logger.error(f"Relay auth failure on translator #{i}: {e}")
                 raise
             except Exception as e:
@@ -1104,6 +1113,15 @@ class FallbackTranslator:
                         yield prev_chunk
                     return
             except RelayAuthError as e:
+                current_key = getattr(translator, "api_key", None)
+                has_different_key = any(
+                    getattr(next_tr, "api_key", None) != current_key
+                    for next_tr in chain[i+1:] if next_tr is not None
+                )
+                if has_different_key:
+                    last_error = str(e)
+                    logger.warning(f"Streaming on translator #{i} auth rejected ({e}); trying next translator with separate credentials")
+                    continue
                 logger.error(f"Relay auth failure on translator #{i}: {e}")
                 raise
             except Exception as e:

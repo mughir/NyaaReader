@@ -87,7 +87,13 @@ async def add_novel(novel_data: NovelCreate, background_tasks: BackgroundTasks, 
 @router.post("/api/novels/manual", response_model=NovelResponse)
 async def add_novel_manual(novel_data: NovelManualCreate, db: Session = Depends(get_db_session)):
     """Add a novel manually (no scraping) — for sites without a scraper or test novels."""
-    existing = db.query(Novel).filter(Novel.source_url == novel_data.source_url).first()
+    raw_url = (novel_data.source_url or "").strip()
+    if not raw_url:
+        slug = re.sub(r'[^a-z0-9]+', '-', novel_data.title.lower()).strip('-') or "novel"
+        source_url = f"manual://{slug}"
+    else:
+        source_url = raw_url
+    existing = db.query(Novel).filter(Novel.source_url == source_url).first()
     if existing:
         raise HTTPException(status_code=400, detail="Novel already exists")
     novel = Novel(
@@ -95,7 +101,7 @@ async def add_novel_manual(novel_data: NovelManualCreate, db: Session = Depends(
         author=novel_data.author or "",
         description=novel_data.description or "",
         cover_url=novel_data.cover_url or "",
-        source_url=novel_data.source_url or f"manual://{re.sub(r'[^a-z0-9]+', '-', novel_data.title.lower()).strip('-')}",
+        source_url=source_url,
         source_site="manual",
         original_language=novel_data.original_language or "zh",
         target_language=novel_data.target_language or "en",
@@ -167,6 +173,9 @@ async def fetch_more_chapters(
 @router.get("/api/novels/{novel_id}/progress", response_model=ReadingProgressResponse)
 async def get_progress(novel_id: int, db: Session = Depends(get_db_session)):
     """Get reading progress for a novel"""
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    if not novel:
+        raise HTTPException(status_code=404, detail="Novel not found")
     progress = db.query(ReadingProgress).filter(
         ReadingProgress.novel_id == novel_id
     ).first()
@@ -230,6 +239,9 @@ async def set_reading_status(novel_id: int, payload: dict, db: Session = Depends
 @router.get("/api/novels/{novel_id}/settings", response_model=dict)
 async def get_settings(novel_id: int, db: Session = Depends(get_db_session)):
     """Get novel settings"""
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    if not novel:
+        raise HTTPException(status_code=404, detail="Novel not found")
     settings = db.query(NovelSettings).filter(
         NovelSettings.novel_id == novel_id
     ).first()
@@ -263,6 +275,9 @@ async def update_settings(
     db: Session = Depends(get_db_session)
 ):
     """Update novel settings"""
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    if not novel:
+        raise HTTPException(status_code=404, detail="Novel not found")
     settings = db.query(NovelSettings).filter(
         NovelSettings.novel_id == novel_id
     ).first()

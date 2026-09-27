@@ -126,6 +126,7 @@ def _set_batch(novel_id, kind, total, label="", args=None):
                 existing.args_json = args_json
                 # A pending stop from the dead job must not stop the new one.
                 existing.stop_requested = False
+                existing.updated_at = datetime.utcnow()
                 db.commit()
                 db.refresh(existing)
             else:
@@ -191,13 +192,17 @@ def _bump_batch(novel_id, label="", done_inc=1):
     from database import SessionLocal
     db = SessionLocal()
     try:
+        now = datetime.utcnow()
+        values = {
+            "done": BatchJob.done + done_inc,
+            "updated_at": now,
+        }
+        if label:
+            values["current_label"] = label
         res = db.execute(
             update(BatchJob)
             .where(BatchJob.novel_id == novel_id, BatchJob.running == True)
-            .values(
-                done=BatchJob.done + done_inc,
-                current_label=label if label else BatchJob.current_label,
-            )
+            .values(**values)
         )
         db.commit()
         cache = _get_main_attr("_batch_cache", _batch_cache)
@@ -225,6 +230,7 @@ def _set_batch_total(novel_id, total, label=""):
             job.total = total
             if label:
                 job.current_label = label
+            job.updated_at = datetime.utcnow()
             db.commit()
             cache = _get_main_attr("_batch_cache", _batch_cache)
             b = cache.get(novel_id)
@@ -258,8 +264,10 @@ def _clear_batch(novel_id):
     try:
         jobs = db.query(BatchJob).filter(
             BatchJob.novel_id == novel_id, BatchJob.running == True).all()
+        now = datetime.utcnow()
         for job in jobs:
             job.running = False
+            job.updated_at = now
             # Keep the real done count — faking done=total lied to the UI
             # on stop/fail ("green done" while chapters were unfinished).
         db.commit()
@@ -376,6 +384,8 @@ def translate_to_end_bg(novel_id: int):
         bump_fn = _get_main_attr("_bump_batch", _bump_batch)
 
         for ch in chapters:
+            ch_num = ch.chapter_number
+            ch_title = ch.title or ''
             if stop_req_fn(novel_id):
                 logger.info(f"translate-to-end stopped by user (novel {novel_id})")
                 outcome = _stopped_label(done, len(chapters), "chapters translated")
@@ -390,17 +400,17 @@ def translate_to_end_bg(novel_id: int):
                 db.refresh(ch)
                 if not ch.original_content:
                     raise RuntimeError("fetch failed — no content")
-                trans_bg_fn(novel_id, ch.chapter_number, "balanced")
+                trans_bg_fn(novel_id, ch_num, "balanced")
                 db.refresh(ch)
                 if ch.is_translated:
                     done += 1
-                bump_fn(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+                bump_fn(novel_id, label=f"Ch {ch_num} {ch_title}")
             except RelayAuthError as e:
                 logger.error(f"translate-to-end stopped: relay key rejected ({e})")
                 outcome = _auth_rejected_label(done, len(chapters), "chapters translated")
                 break
             except Exception as e:
-                logger.warning(f"translate-to-end ch{ch.chapter_number} failed: {e}")
+                logger.warning(f"translate-to-end ch{ch_num} failed: {e}")
                 db.rollback()
         finish_fn = _get_main_attr("_finish_batch", _finish_batch)
         finish_fn(novel_id, outcome or f"Translated {done}/{len(chapters)} chapters")
@@ -423,7 +433,7 @@ def _translate_selected_bg(novel_id: int, chapter_numbers: List[int]):
         if not chapters:
             return
         set_batch_fn = _get_main_attr("_set_batch", _set_batch)
-        if not set_batch_fn(novel_id, "translate-selected", len(chapters)):
+        if not set_batch_fn(novel_id, "translate-selected", len(chapters), args={"chapters": chapter_numbers}):
             return
         done = 0
         outcome = None
@@ -433,6 +443,8 @@ def _translate_selected_bg(novel_id: int, chapter_numbers: List[int]):
         bump_fn = _get_main_attr("_bump_batch", _bump_batch)
 
         for ch in chapters:
+            ch_num = ch.chapter_number
+            ch_title = ch.title or ''
             if stop_req_fn(novel_id):
                 outcome = _stopped_label(done, len(chapters), "selected chapters translated")
                 break
@@ -446,17 +458,17 @@ def _translate_selected_bg(novel_id: int, chapter_numbers: List[int]):
                 db.refresh(ch)
                 if not ch.original_content:
                     continue
-                trans_bg_fn(novel_id, ch.chapter_number, "balanced")
+                trans_bg_fn(novel_id, ch_num, "balanced")
                 db.refresh(ch)
                 if ch.is_translated:
                     done += 1
-                bump_fn(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+                bump_fn(novel_id, label=f"Ch {ch_num} {ch_title}")
             except RelayAuthError as e:
                 logger.error(f"translate-selected stopped: relay key rejected ({e})")
                 outcome = _auth_rejected_label(done, len(chapters), "selected chapters translated")
                 break
             except Exception as e:
-                logger.warning(f"translate-selected ch{ch.chapter_number} failed: {e}")
+                logger.warning(f"translate-selected ch{ch_num} failed: {e}")
                 db.rollback()
         finish_fn = _get_main_attr("_finish_batch", _finish_batch)
         finish_fn(novel_id, outcome or f"Translated {done}/{len(chapters)} selected chapters")
@@ -490,6 +502,8 @@ def retranslate_match_bg(novel_id: int, needle: str):
         bump_fn = _get_main_attr("_bump_batch", _bump_batch)
 
         for ch in chapters:
+            ch_num = ch.chapter_number
+            ch_title = ch.title or ''
             if stop_req_fn(novel_id):
                 logger.info(f"match-retranslate stopped by user (novel {novel_id})")
                 outcome = _stopped_label(done, len(chapters), "chapters retranslated")
@@ -497,13 +511,13 @@ def retranslate_match_bg(novel_id: int, needle: str):
             try:
                 trans_fn(db, ch, quality="balanced", force=True)
                 done += 1
-                bump_fn(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+                bump_fn(novel_id, label=f"Ch {ch_num} {ch_title}")
             except RelayAuthError as e:
                 logger.error(f"match-retranslate stopped: relay key rejected ({e})")
                 outcome = _auth_rejected_label(done, len(chapters), "chapters retranslated")
                 break
             except Exception as e:
-                logger.warning(f"match-retranslate ch{ch.chapter_number} failed: {e}")
+                logger.warning(f"match-retranslate ch{ch_num} failed: {e}")
                 db.rollback()
         finish_fn = _get_main_attr("_finish_batch", _finish_batch)
         finish_fn(novel_id, outcome or f"Retranslated {done}/{len(chapters)} matching chapters")
@@ -591,13 +605,15 @@ def check_updates_bg(novel_id: int):
 
             done = 0
             for ch in todo:
+                ch_num = ch.chapter_number
+                ch_title = ch.title or ''
                 if stop_req_fn(novel_id):
                     logger.info(f"check-updates novel {novel_id}: stopped by user")
                     finish_fn(novel_id, _stopped_label(done, len(todo), "new chapters translated"))
                     return
                 try:
                     if not ch.original_content:
-                        bump_fn(novel_id, label=f"Fetching Ch {ch.chapter_number}…", done_inc=0)
+                        bump_fn(novel_id, label=f"Fetching Ch {ch_num}…", done_inc=0)
                         ch_data = fetch_sync_fn(ch.source_url)
                         if ch_data and ch_data.content:
                             ch.original_content = ch_data.content
@@ -609,17 +625,17 @@ def check_updates_bg(novel_id: int):
                         finish_fn(novel_id, _stopped_label(done, len(todo), "new chapters translated"))
                         return
                     if ch.original_content:
-                        bump_fn(novel_id, label=f"Translating Ch {ch.chapter_number}…", done_inc=0)
-                        trans_bg_fn(novel_id, ch.chapter_number, "balanced")
+                        bump_fn(novel_id, label=f"Translating Ch {ch_num}…", done_inc=0)
+                        trans_bg_fn(novel_id, ch_num, "balanced")
                     done += 1
-                    bump_fn(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+                    bump_fn(novel_id, label=f"Ch {ch_num} {ch_title}")
                 except RelayAuthError as e:
                     logger.error(f"check-updates translate stopped: relay key rejected ({e})")
                     finish_fn(novel_id, _auth_rejected_label(done, len(todo), "new chapters translated"))
                     return
                 except Exception as e:
+                    logger.warning(f"check-updates translate ch{ch_num} failed: {e}")
                     db.rollback()
-                    logger.warning(f"check-updates translate ch{ch.chapter_number} failed: {e}")
             finish_fn(novel_id, f"Added {added} new chapter(s)")
         except Exception as e:
             finish_fn(novel_id, f"Unexpected error: {str(e)[:120]}")
@@ -697,6 +713,8 @@ def _retry_failed_bg(novel_id: int):
         bump_fn = _get_main_attr("_bump_batch", _bump_batch)
 
         for ch in failed:
+            ch_num = ch.chapter_number
+            ch_title = ch.title or ''
             if stop_req_fn(novel_id):
                 logger.info(f"retry-failed stopped by user (novel {novel_id})")
                 outcome = _stopped_label(done, len(failed), "chapters retried")
@@ -710,19 +728,19 @@ def _retry_failed_bg(novel_id: int):
                         db.commit()
                     db.refresh(ch)
                 if ch.original_content:
-                    trans_bg_fn(novel_id, ch.chapter_number, "balanced")
+                    trans_bg_fn(novel_id, ch_num, "balanced")
                     db.refresh(ch)
                     if ch.is_translated:
                         ch.last_error = ""
                         done += 1
                         db.commit()
-                bump_fn(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+                bump_fn(novel_id, label=f"Ch {ch_num} {ch_title}")
             except RelayAuthError as e:
                 logger.error(f"retry-failed stopped: relay key rejected ({e})")
                 outcome = _auth_rejected_label(done, len(failed), "chapters retried")
                 break
             except Exception as e:
-                logger.warning(f"retry-failed ch{ch.chapter_number}: {e}")
+                logger.warning(f"retry-failed ch{ch_num}: {e}")
                 db.rollback()
         finish_fn = _get_main_attr("_finish_batch", _finish_batch)
         finish_fn(novel_id, outcome or f"Retried {done}/{len(failed)} failed chapters")
@@ -757,6 +775,8 @@ def translate_titles_bg(novel_id: int):
         bump_fn = _get_main_attr("_bump_batch", _bump_batch)
 
         for ch in chapters:
+            ch_num = ch.chapter_number
+            ch_title = ch.title or ''
             if stop_req_fn(novel_id):
                 logger.info(f"translate-titles stopped by user (novel {novel_id})")
                 outcome = _stopped_label(done, len(chapters), "titles translated")
@@ -773,14 +793,14 @@ def translate_titles_bg(novel_id: int):
                     ch.title_translated = t.strip()
                     db.commit()
                 done += 1
-                bump_fn(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+                bump_fn(novel_id, label=f"Ch {ch_num} {ch_title}")
                 time.sleep(1.5)
             except RelayAuthError as e:
                 logger.error(f"translate-titles stopped: relay key rejected ({e})")
                 outcome = _auth_rejected_label(done, len(chapters), "titles translated")
                 break
             except Exception as e:
-                logger.warning(f"title translate ch{ch.chapter_number} failed: {e}")
+                logger.warning(f"title translate ch{ch_num} failed: {e}")
                 db.rollback()
         finish_fn = _get_main_attr("_finish_batch", _finish_batch)
         finish_fn(novel_id, outcome or f"Translated {done}/{len(chapters)} titles")
@@ -892,6 +912,8 @@ def _retranslate_bg(novel_id: int):
         bump_fn = _get_main_attr("_bump_batch", _bump_batch)
 
         for ch in chapters:
+            ch_num = ch.chapter_number
+            ch_title = ch.title or ''
             if stop_req_fn(novel_id):
                 logger.info(f"retranslate stopped by user (novel {novel_id})")
                 outcome = _stopped_label(done, len(chapters), "chapters retranslated")
@@ -899,13 +921,13 @@ def _retranslate_bg(novel_id: int):
             try:
                 trans_fn(db, ch, quality="balanced", force=True)
                 done += 1
-                bump_fn(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+                bump_fn(novel_id, label=f"Ch {ch_num} {ch_title}")
             except RelayAuthError as e:
                 logger.error(f"retranslate stopped: relay key rejected ({e})")
                 outcome = _auth_rejected_label(done, len(chapters), "chapters retranslated")
                 break
             except Exception as e:
-                logger.warning(f"retranslate ch{ch.chapter_number} failed: {e}")
+                logger.warning(f"retranslate ch{ch_num} failed: {e}")
                 db.rollback()
         finish_fn = _get_main_attr("_finish_batch", _finish_batch)
         finish_fn(novel_id, outcome or f"Retranslated {done}/{len(chapters)} chapters")
@@ -922,24 +944,14 @@ def translate_ahead_bg(novel_id: int, after_chapter: int, count: int = 5):
         novel = db.query(Novel).filter(Novel.id == novel_id).first()
         if not novel:
             return
-        run = [after_chapter + 1]
-        taken = []
-        for chnum in run:
-            if len(taken) >= count:
-                break
-            ch = db.query(Chapter).filter(
-                Chapter.novel_id == novel_id,
-                Chapter.chapter_number == chnum,
-            ).first()
-            if not ch:
-                break
-            if ch.is_translated:
-                break
-            taken.append(ch)
-            run.append(chnum + 1)
-        if not taken:
+        next_chs = (db.query(Chapter)
+                    .filter(Chapter.novel_id == novel_id,
+                            Chapter.chapter_number > after_chapter,
+                            Chapter.is_translated == False)
+                    .order_by(Chapter.chapter_number)
+                    .limit(count).all())
+        if not next_chs:
             return
-        next_chs = taken
         set_batch_fn = _get_main_attr("_set_batch", _set_batch)
         if not set_batch_fn(novel_id, "translate-ahead", len(next_chs),
                             args={"after_chapter": after_chapter, "count": count}):
@@ -952,8 +964,10 @@ def translate_ahead_bg(novel_id: int, after_chapter: int, count: int = 5):
         bump_fn = _get_main_attr("_bump_batch", _bump_batch)
 
         for ch in next_chs:
+            ch_num = ch.chapter_number
+            ch_title = ch.title or ''
             if stop_req_fn(novel_id):
-                logger.info(f"translate-ahead stopped by user (novel {novel_id}, after ch{ch.chapter_number})")
+                logger.info(f"translate-ahead stopped by user (novel {novel_id}, after ch{ch_num})")
                 outcome = _stopped_label(done, len(next_chs), "chapters prepared")
                 break
             try:
@@ -961,7 +975,7 @@ def translate_ahead_bg(novel_id: int, after_chapter: int, count: int = 5):
                     ch_data = fetch_sync_fn(ch.source_url)
                     if ch_data and ch_data.content:
                         ch.original_content = ch_data.content
-                        ch.word_count = ch_data.word_count
+                        ch.word_count = getattr(ch_data, "word_count", 0) or 0
                         db.commit()
                 if not ch.original_content:
                     raise RuntimeError("fetch failed — no content")
@@ -969,18 +983,18 @@ def translate_ahead_bg(novel_id: int, after_chapter: int, count: int = 5):
                     logger.info(f"translate-ahead stopped mid-fetch (novel {novel_id})")
                     outcome = _stopped_label(done, len(next_chs), "chapters prepared")
                     break
-                trans_bg_fn(novel_id, ch.chapter_number, "balanced")
+                trans_bg_fn(novel_id, ch_num, "balanced")
                 db.refresh(ch)
                 if ch.is_translated:
                     done += 1
-                bump_fn(novel_id, label=f"Ch {ch.chapter_number} {ch.title or ''}")
+                bump_fn(novel_id, label=f"Ch {ch_num} {ch_title}")
             except RelayAuthError as e:
                 logger.error(f"translate-ahead stopped: relay key rejected ({e})")
                 outcome = _auth_rejected_label(done, len(next_chs), "chapters prepared")
                 break
             except Exception as e:
+                logger.warning(f"translate-ahead ch{ch_num} failed: {e}")
                 db.rollback()
-                logger.warning(f"translate-ahead ch{ch.chapter_number} failed: {e}")
         finish_fn = _get_main_attr("_finish_batch", _finish_batch)
         finish_fn(novel_id, outcome or f"Prepared {done}/{len(next_chs)} chapters ahead")
     finally:
@@ -1020,7 +1034,7 @@ def _launch_batch(novel_id, kind, args_json="") -> bool:
             count = args.get("count", 5)
             targets["translate-ahead"] = lambda: _get_main_attr("translate_ahead_bg", translate_ahead_bg)(novel_id, after_chapter, count)
     elif kind == "translate-selected":
-        chapter_numbers = args.get("chapter_numbers")
+        chapter_numbers = args.get("chapter_numbers") or args.get("chapters")
         if chapter_numbers:
             targets["translate-selected"] = lambda: _get_main_attr("_translate_selected_bg", _translate_selected_bg)(novel_id, chapter_numbers)
     fn = targets.get(kind)

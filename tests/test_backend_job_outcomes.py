@@ -230,3 +230,39 @@ def app_module_novel(novel_id):
         return db.query(Novel).filter(Novel.id == novel_id).first()
     finally:
         db.close()
+
+
+class TestTranslateAheadSkipsTranslatedChapters:
+    def test_translate_ahead_translates_untranslated_past_already_translated(self, client, monkeypatch):
+        """translate_ahead_bg should not abort if an intermediate chapter is already translated."""
+        novel_id = _seed_novel(client, "Ahead Skip", "manual://ahead-skip-1", n_chapters=0)
+        db = SessionLocal()
+        # Ch 1 untranslated, Ch 2 translated, Ch 3 untranslated
+        db.add(Chapter(novel_id=novel_id, chapter_number=1, title="ch1",
+                       original_content="raw1", is_translated=False))
+        db.add(Chapter(novel_id=novel_id, chapter_number=2, title="ch2",
+                       original_content="raw2", translated_content="trans2", is_translated=True))
+        db.add(Chapter(novel_id=novel_id, chapter_number=3, title="ch3",
+                       original_content="raw3", is_translated=False))
+        db.commit()
+        db.close()
+
+        translated_chs = []
+        def fake_translate(nid, ch_num, quality):
+            translated_chs.append(ch_num)
+            db2 = SessionLocal()
+            ch = db2.query(Chapter).filter(Chapter.novel_id == nid, Chapter.chapter_number == ch_num).first()
+            ch.is_translated = True
+            ch.translated_content = f"translated {ch_num}"
+            db2.commit()
+            db2.close()
+
+        monkeypatch.setattr(app_module, "_translate_chapter_bg", fake_translate)
+
+        app_module.translate_ahead_bg(novel_id, after_chapter=0, count=2)
+
+        # Should translate Ch 1 and Ch 3 (skipping Ch 2 because it's already translated)
+        assert translated_chs == [1, 3]
+        job = _job_for(novel_id)
+        assert job.running is False
+        assert "Prepared 2/2" in job.current_label

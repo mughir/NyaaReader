@@ -76,6 +76,18 @@ def test_launch_batch_resumes_translate_ahead_with_its_after_chapter_and_count(c
     assert calls == [(novel_id, 12, 3)]
 
 
+def test_launch_batch_resumes_translate_selected_with_its_chapters(client, monkeypatch):
+    novel_id = _novel(client, "resume-selected-1")
+    calls = []
+    monkeypatch.setattr(app_module, "_translate_selected_bg",
+                        lambda nid, chapters: calls.append((nid, chapters)))
+
+    started = app_module._launch_batch(novel_id, "translate-selected", json.dumps({"chapters": [2, 4, 6]}))
+    assert started is True
+    time.sleep(0.3)
+    assert calls == [(novel_id, [2, 4, 6])]
+
+
 def test_launch_batch_still_refuses_these_kinds_without_usable_args(client):
     # Unchanged behavior for a row with no args_json (an old pre-fix row, or a
     # genuinely empty one) — resuming with a guessed needle/chapter list would
@@ -84,6 +96,7 @@ def test_launch_batch_still_refuses_these_kinds_without_usable_args(client):
     assert app_module._launch_batch(novel_id, "match") is False
     assert app_module._launch_batch(novel_id, "retranslate-drift") is False
     assert app_module._launch_batch(novel_id, "translate-ahead") is False
+    assert app_module._launch_batch(novel_id, "translate-selected") is False
     # Malformed JSON must fail the same way, not raise.
     assert app_module._launch_batch(novel_id, "match", "{not json") is False
 

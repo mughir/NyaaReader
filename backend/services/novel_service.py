@@ -154,10 +154,15 @@ def _translate_chapter(db, chapter, quality: str = "balanced", force: bool = Fal
 
     if chapter.title and not chapter.title_translated:
         try:
-            translated_title = translator.translate_short(
-                chapter.title, novel.original_language, novel.target_language,
-                session_id=session_id,
-            )
+            try:
+                translated_title = translator.translate_short(
+                    chapter.title, novel.original_language, novel.target_language,
+                    session_id=session_id,
+                )
+            except TypeError:
+                translated_title = translator.translate_short(
+                    chapter.title, novel.original_language, novel.target_language,
+                )
             if translated_title and translated_title.strip():
                 chapter.title_translated = translated_title.strip()
         except Exception as e:
@@ -406,6 +411,19 @@ async def fetch_chapters_range(novel_id: int, start: int, count: int, do_transla
                             chapter.translated_word_count = result.output_tokens * 4
                             chapter.translation_model = result.model_used
                             chapter.translation_cost = result.estimated_cost
+                            chapter.last_error = ""
+                            if chapter.title and not chapter.title_translated:
+                                try:
+                                    t = await asyncio.to_thread(
+                                        translator.translate_short,
+                                        chapter.title, novel.original_language, novel.target_language
+                                    )
+                                    if t and t.strip():
+                                        chapter.title_translated = t.strip()
+                                except Exception:
+                                    pass
+                        else:
+                            chapter.last_error = getattr(result, "error", "Translation failed")[:500]
 
                     db.commit()
                 except Exception as e:

@@ -352,6 +352,9 @@ async def fetch_chapter_json(novel_id: int, chapter_number: int, force: bool = F
 @router.get("/api/novels/{novel_id}/memory")
 async def get_memory(novel_id: int, db: Session = Depends(get_db_session)):
     """Get the current AI memory / knowledge for a novel."""
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    if not novel:
+        raise HTTPException(status_code=404, detail="Novel not found")
     mem = db.query(NovelMemory).filter(NovelMemory.novel_id == novel_id).first()
     if not mem:
         return {

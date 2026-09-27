@@ -155,13 +155,8 @@ async def novel_review_page(novel_id: int, db: Session = Depends(get_db_session)
     mem = db.query(NovelMemory).filter(NovelMemory.novel_id == novel_id).first()
     memory_data = {}
     if mem:
-        gl = mem.glossary_entries
-        if isinstance(gl, str):
-            try:
-                gl = json.loads(gl)
-            except Exception as e:
-                logger.warning(f"review page: could not parse glossary_entries for novel {novel_id}: {e}")
-                gl = []
+        from services.novel_service import _load_glossary
+        entries = _load_glossary(mem)
         memory_data = {
             "characters": mem.characters or "",
             "terms": mem.terms or "",
@@ -169,7 +164,7 @@ async def novel_review_page(novel_id: int, db: Session = Depends(get_db_session)
             "arc_plot": mem.arc_plot or "",
             "chapter_plot": mem.chapter_plot or "",
             "memory": mem.memory or "",
-            "glossary_entries": gl or [],
+            "glossary_entries": entries or [],
         }
     entries = (db.query(DiaryEntry)
                .filter(DiaryEntry.novel_id == novel_id)

@@ -64,6 +64,8 @@ def _urlopen_error_on_chat(model_ids, error_body):
             self.body = body
         def read(self):
             return self.body.encode()
+        def close(self):
+            pass
     def _urlopen(req, timeout=None):
         url = req.full_url
         if url.endswith("/chat/completions"):
@@ -175,6 +177,8 @@ class TestChatGate:
         class _Err:
             def read(self):
                 return b'{"error":{"message":"model access denied"}}'
+            def close(self):
+                pass
 
         def reject_chat(req, timeout=None):
             if req.full_url.endswith("/chat/completions"):
