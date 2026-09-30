@@ -26,7 +26,7 @@
       const stoppingBatch = ref(false);
 
       const SHELF_LABEL = { ongoing: "Ongoing", read_later: "Read Later", done: "Done", dropped: "Dropped" };
-      const SHELF_ICON = { ongoing: "i-book-open", read_later: "i-bookmark", done: "i-check", dropped: "i-trash" };
+      const SHELF_ICON = { ongoing: "i-book-open", read_later: "i-bookmark", done: "i-check", dropped: "i-x-circle" };
       function shelfLabel(k) { return SHELF_LABEL[k] || k; }
       function shelfIcon(k) { return SHELF_ICON[k] || "i-book"; }
 
@@ -54,12 +54,22 @@
       const moreMenu = ref(null);
       const showOrig = ref(false);
       const descOpen = ref(false);
-      // is the synopsis long enough to warrant a Read-more toggle?
-      const descLong = computed(() =>
-        (novel.value.description_translated || novel.value.description || "").length > 400
-      );
-      // "Read" target: next unread chapter or latest translated
+      // Show Read-more only when the clamped synopsis actually overflows.
+      // A character count can't know the rendered width (a 300-char synopsis
+      // is 3 lines on desktop but 9 on a phone), so measure the element.
+      const descEl = ref(null);
+      const descOverflows = ref(false);
+      function measureDesc() {
+        const el = descEl.value;
+        if (el && !descOpen.value && !showOrig.value) descOverflows.value = el.scrollHeight > el.clientHeight + 2;
+      }
+      onMounted(() => { measureDesc(); window.addEventListener("resize", measureDesc); });
+      const descLong = computed(() => descOverflows.value || descOpen.value);
+      // "Continue" target comes from the server (same helper as the library
+      // card) so both pages agree. Only a never-opened novel falls back to
+      // the first unread translated chapter here.
       const readTarget = computed(() => {
+        if (novel.value.continue_chapter) return novel.value.continue_chapter;
         const readChaps = chapters.value.filter(c => c.is_read).map(c => c.chapter_number);
         const maxRead = readChaps.length ? Math.max(...readChaps) : 0;
         const nextToRead = chapters.value.find(c => c.chapter_number > maxRead && c.is_translated);
@@ -69,8 +79,7 @@
         return 1;
       });
       const readButtonText = computed(() => {
-        const readCount = chapters.value.filter(c => c.is_read).length;
-        if (readCount === 0) return `Read Ch ${readTarget.value}`;
+        if (!novel.value.continue_chapter) return `Start reading · Ch ${readTarget.value}`;
         return `Continue Ch ${readTarget.value}`;
       });
       const parsedDesc = computed(() => {
@@ -729,7 +738,7 @@
                exportingEpub, epubReady, exportEpub, generatingCover, generateCover,
                uploadingCover, coverInput, onCoverFile,
                driftCount, fixingDrift, loadDriftCount, fixDrift,
-               moreOpen, moreMenu, showOrig, readTarget, descOpen, descLong,
+               moreOpen, moreMenu, showOrig, readTarget, descOpen, descLong, descEl,
                memory, memOpen, memLoading, memSaving, memSaved, retranslating, translatingTitles,
                translatingAll, checking, shelfStatus, shelfLabel, shelfIcon,
                gloss, memSections, toggleMemory, saveMemory, retranslate, translateTitles,
@@ -802,7 +811,7 @@
         </div>
 
         <!-- Synopsis -->
-        <div class="desc" :class="{collapsed: !descOpen && !showOrig}">{{ parsedDesc.text }}</div>
+        <div class="desc" ref="descEl" :class="{collapsed: !descOpen && !showOrig}">{{ parsedDesc.text }}</div>
         <button v-if="descLong" class="orig-toggle" @click="descOpen = !descOpen">{{ descOpen ? '▾ Show less' : '▸ Read more' }}</button>
         
         <div v-if="novel.description_translated && novel.description !== novel.description_translated" style="margin-top:2px">
@@ -812,7 +821,7 @@
 
         <!-- Action Toolbar -->
         <div class="hero-actions">
-          <a class="btn hero-cta" :href="'/novel/' + novel.id + '/chapter/' + readTarget" title="Jump to next unread chapter">
+          <a class="btn hero-cta" :href="'/novel/' + novel.id + '/chapter/' + readTarget" title="Pick up where you left off">
             <svg class="ic"><use href="#i-book"/></svg> {{ readButtonText }}
           </a>
           <button class="btn soft" @click="translateAll" :disabled="translatingAll">
@@ -995,7 +1004,7 @@
         <input v-if="selectMode" type="checkbox" :checked="isSelected(c.chapter_number)"
                @click.stop="toggleChapterSelect(c.chapter_number, i, $event)" class="ch-checkbox">
         <a :href="selectMode ? null : ('/novel/' + novel.id + '/chapter/' + c.chapter_number)"
-           style="display:flex;align-items:center;gap:12px;flex:1;color:inherit;text-decoration:none">
+           style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;color:inherit;text-decoration:none">
           <span class="read-dot" :class="{read: c.is_read}" :title="c.is_read ? 'Read' : 'Not read yet'"></span>
           <span class="num">{{ c.chapter_number }}</span>
           <span class="ttl">

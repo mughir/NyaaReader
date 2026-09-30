@@ -259,7 +259,7 @@
         <span class="cfg-label-text">Relay API key</span>
         <span class="status-badge" :class="cfg.fallback_api_key_set ? 'st-set' : 'st-unset'">{{ cfg.fallback_api_key_set ? 'Set ✓' : 'Not set' }}</span>
       </label>
-      <p class="cfg-hint">Primary relay key for Model 1 (deepseek-v4-flash).</p>
+      <p class="cfg-hint">Primary relay key, used by Model 1 (and Model 2 unless it has its own).</p>
       <input type="password" v-model="cfg.fallback_api_key" placeholder="Leave empty to keep current key"
              class="cfg-input long" autocomplete="off">
       <label class="cfg-label"><span class="cfg-label-text">Relay base URL</span>

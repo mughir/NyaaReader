@@ -10,7 +10,7 @@
     { key: "ongoing", label: "Ongoing", icon: "i-book-open" },
     { key: "read_later", label: "Read Later", icon: "i-bookmark" },
     { key: "done", label: "Done", icon: "i-check" },
-    { key: "dropped", label: "Dropped", icon: "i-trash" },
+    { key: "dropped", label: "Dropped", icon: "i-x-circle" },
   ];
 
   const app = createApp({
@@ -80,7 +80,7 @@
       const safeCoverUrl = (window.NyaaText && window.NyaaText.safeCoverUrl)
         || ((u) => { const s = String(u || "").replace(/[\s'"();]/g, ""); return /^https?:\/\//.test(s) || s[0] === "/" ? s : ""; });
       function coverStyle(n) {
-        const safe = safeCoverUrl(n.cover_url);
+        const safe = hasCover(n) ? safeCoverUrl(n.cover_url) : "";
         if (safe) {
           return { backgroundImage: `url(${safe})`, backgroundSize: "cover", backgroundPosition: "center" };
         }
@@ -90,7 +90,7 @@
         };
       }
       function coverText(n) {
-        if (n.cover_url) return "";
+        if (hasCover(n)) return "";
         const t = (n.title_translated || n.title || "?").trim();
         return t ? t[0].toUpperCase() : "?";
       }
@@ -107,6 +107,15 @@
         const newUrl = key === "all" ? "/" : "/?shelf=" + key;
         window.history.pushState({}, "", newUrl);
       }
+      // Browser Back/Forward changed the URL but not the visible shelf.
+      window.addEventListener("popstate", () => {
+        shelf.value = new URLSearchParams(window.location.search).get("shelf") || "all";
+      });
+      // A cover URL that fails to load (file gone, hotlink blocked) left a
+      // blank grey card; fall back to the gradient + initial instead.
+      const brokenCovers = ref(new Set());
+      function coverBroken(n) { brokenCovers.value = new Set(brokenCovers.value).add(n.id); }
+      function hasCover(n) { return !!safeCoverUrl(n.cover_url) && !brokenCovers.value.has(n.id); }
 
       async function addNovel() {
         if (!url.value || adding.value) return;
@@ -137,7 +146,7 @@
       function openChapter(id, n) { window.location.href = `/novel/${id}/chapter/${n}`; }
 
       return { novels, filteredNovels, shelf, searchQuery, sortMode, viewMode, SHELVES, url, lang, adding, error, notice,
-               pct, readPct, coverStyle, coverText, shelfLabel, shelfIcon, goShelf,
+               pct, readPct, coverStyle, coverText, hasCover, coverBroken, safeCoverUrl, shelfLabel, shelfIcon, goShelf,
                addNovel, openNovel, openChapter };
     },
     template: `
@@ -164,7 +173,7 @@
         <option value="ko">→ Korean</option>
       </select>
       <button class="btn" type="submit" :disabled="adding">{{ adding ? 'Adding…' : '+ Add' }}</button>
-      <div class="hint">AI translation is on by default (Gemini with DeepSeek fallback). First 5 chapters auto-fetch in the background.</div>
+      <div class="hint">Chapters are AI-translated through the relay configured in Settings. The first chapters are fetched in the background right after adding.</div>
     </form>
 
     <div v-if="error" class="banner err" style="margin-top:12px">⚠ {{ error }}</div>
@@ -199,7 +208,8 @@
     <div v-if="filteredNovels.length && viewMode === 'grid'" class="library-grid">
       <a v-for="n in filteredNovels" :key="n.id" class="novel-card" :href="'/novel/' + n.id">
         <div class="cover" :style="coverStyle(n)">
-          <span v-if="!n.cover_url" class="cover-initial">{{ coverText(n) }}</span>
+          <img v-if="hasCover(n)" :src="safeCoverUrl(n.cover_url)" alt="" hidden @error="coverBroken(n)">
+          <span v-if="!hasCover(n)" class="cover-initial">{{ coverText(n) }}</span>
           <span class="cover-badge" :class="'st-' + (n.reading_status||'ongoing')">{{ shelfLabel(n.reading_status || 'ongoing') }}</span>
         </div>
         <div class="card-body">
@@ -220,7 +230,8 @@
     <div v-else-if="filteredNovels.length && viewMode === 'list'" class="library-list">
       <a v-for="n in filteredNovels" :key="n.id" class="list-card" :href="'/novel/' + n.id">
         <div class="list-cover" :style="coverStyle(n)">
-          <span v-if="!n.cover_url" class="list-cover-initial">{{ coverText(n) }}</span>
+          <img v-if="hasCover(n)" :src="safeCoverUrl(n.cover_url)" alt="" hidden @error="coverBroken(n)">
+          <span v-if="!hasCover(n)" class="list-cover-initial">{{ coverText(n) }}</span>
         </div>
         <div class="list-main">
           <div class="list-header">
@@ -248,7 +259,7 @@
       <div class="empty-title">{{ searchQuery ? 'No novels match your search' : (shelf === 'all' ? 'Your library is empty' : 'Nothing on this shelf yet') }}</div>
       <div class="empty-sub" v-if="searchQuery">Try a different title, author, or keyword.</div>
       <div class="empty-sub" v-else-if="shelf === 'all'">Paste a novel URL above to add your first book — it will be scraped and AI-translated automatically.</div>
-      <div class="empty-sub" v-else>Move novels here from their page (📖 Ongoing / 🔖 Read Later / ✅ Done / 🗑 Dropped), or switch to <button class="btn ghost small" @click="goShelf('all')">All</button>.</div>
+      <div class="empty-sub" v-else>Move novels here from their page (Ongoing / Read Later / Done / Dropped), or switch to <button class="btn ghost small" @click="goShelf('all')">All</button>.</div>
     </div>
   </div>
 </div>`,
