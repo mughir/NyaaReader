@@ -13,7 +13,7 @@
       let pollTimer = null;
       let noticeTimer = null;
 
-      const SHELF_ICON = { ongoing: "i-book-open", read_later: "i-bookmark", done: "i-check", dropped: "i-trash" };
+      const SHELF_ICON = { ongoing: "i-book-open", read_later: "i-bookmark", done: "i-check", dropped: "i-x-circle" };
       const SHELF_LABEL = { ongoing: "Ongoing", read_later: "Read later", done: "Done", dropped: "Dropped" };
 
       const activeJobs = computed(() => (tasksData.value && tasksData.value.active_jobs) || []);

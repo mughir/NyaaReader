@@ -130,3 +130,34 @@ def _get_recap(db, novel_id: int) -> dict:
     if ch:
         recap["chapter"] = ch
     return recap
+
+
+# A chapter scrolled at least this far counts as finished, so "Continue"
+# moves on to the next one instead of reopening it.
+_FINISHED_PCT = 90.0
+
+
+def _continue_chapter(db, novel_id: int) -> Optional[dict]:
+    """Where "Continue" should take the reader, or None if never opened.
+
+    Single source of truth for the library card AND the novel page — they
+    used to compute this independently and disagreed (library: last opened
+    chapter; novel page: next translated chapter after the highest read one).
+    """
+    from models import Chapter, ReadingProgress
+    prog = db.query(ReadingProgress).filter(ReadingProgress.novel_id == novel_id).first()
+    if not prog or not prog.chapter_id:
+        return None
+    ch = db.query(Chapter).filter(Chapter.id == prog.chapter_id,
+                                  Chapter.novel_id == novel_id).first()
+    if not ch:
+        return None
+    if (prog.percentage or 0) >= _FINISHED_PCT:
+        nxt = (db.query(Chapter)
+               .filter(Chapter.novel_id == novel_id,
+                       Chapter.chapter_number > ch.chapter_number)
+               .order_by(Chapter.chapter_number).first())
+        if nxt:
+            ch = nxt
+    return {"chapter_number": ch.chapter_number,
+            "title": ch.title_translated or ch.title}

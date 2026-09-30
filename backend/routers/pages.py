@@ -11,8 +11,8 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from database import get_db_session
-from models import Chapter, DiaryEntry, Novel, NovelMemory, ReadingProgress
-from views import _get_recap, _json, _page
+from models import Chapter, DiaryEntry, Novel, NovelMemory
+from views import _continue_chapter, _get_recap, _json, _page
 
 logger = logging.getLogger("novel-reader.pages_router")
 
@@ -29,15 +29,7 @@ async def library_page(request: Request, db: Session = Depends(get_db_session)):
             Chapter.novel_id == n.id, Chapter.is_translated == True).count()
         read_count = db.query(Chapter).filter(
             Chapter.novel_id == n.id, Chapter.is_read == True).count()
-        prog = db.query(ReadingProgress).filter(ReadingProgress.novel_id == n.id).first()
-        last_read = None
-        if prog and prog.chapter_id:
-            ch = db.query(Chapter).filter(Chapter.id == prog.chapter_id).first()
-            if ch:
-                last_read = {
-                    "chapter_number": ch.chapter_number,
-                    "title": ch.title_translated or ch.title,
-                }
+        last_read = _continue_chapter(db, n.id)
         data.append({
             "id": n.id,
             "title": n.title,
@@ -81,6 +73,7 @@ async def novel_page(novel_id: int, db: Session = Depends(get_db_session)):
         "status": novel.status,
         "reading_status": novel.reading_status or "ongoing",
         "total_chapters": novel.total_chapters,
+        "continue_chapter": (_continue_chapter(db, novel.id) or {}).get("chapter_number"),
     }
     ch_data = [{
         "id": c.id,

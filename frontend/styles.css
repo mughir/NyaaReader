@@ -941,6 +941,7 @@ body.toolbar-hidden .reader-toolbar { transform: translateY(-100%); opacity: 0; 
 @media (max-width: 600px) {
   .hero { flex-direction: column; align-items: center; text-align: center; }
   .hero .cover { width: 110px; height: 147px; }
+  .hero .orig-toggle { align-self: center; }  /* match the centered hero text */
   .reader-main { padding: 18px 14px 50px; }
   /* compact library grid for phones */
   .library-grid { gap: 12px; }
@@ -955,7 +956,11 @@ body.toolbar-hidden .reader-toolbar { transform: translateY(-100%); opacity: 0; 
   .topbar .crumb { font-size: 12px; }
   .topbar .topnav { gap: 2px; margin-left: 2px; }
   .topbar .nav-link { padding: 8px 9px; }
-  .topbar .nav-label { display: none; }   /* icon-only nav on phones */
+  /* icon-only nav on phones: drop the 96px desktop min-width (it pushed Settings
+     off-screen and made every page scroll sideways at 375px) and hide the label
+     visually only, so the link keeps an accessible name. */
+  .topbar .nav-link { min-width: 0; }
+  .topbar .nav-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .topbar .crumb { display: none; }        /* breadcrumb hidden on phones (title lives in hero) */
   /* add-form stacks fully */
   .add-form input[type=url] { min-width: 100%; }
@@ -989,7 +994,6 @@ body.toolbar-hidden .reader-toolbar { transform: translateY(-100%); opacity: 0; 
   .settings-pop .sp-row .tool-group button { height: 40px; }
   /* review + config cards breathe */
   .rv-card, .cfg-card { padding: 10px 12px; }
-  .hero .desc.collapsed { max-height: 90px; }
 }
 
 /* ---------- Recap card + diary box (reader) ---------- */
@@ -1206,4 +1210,11 @@ body, .topbar, .reader-toolbar, .toc-drawer, .settings-pop, .sel-pop, .recap-car
 .pg-jump input { width: 88px; }
 
 /* ---------- Synopsis Read-more ---------- */
-/* (collapsed clamp + fade now defined on .hero .desc.collapsed above) */
+/* Collapsed synopsis: clip to ~5 lines with a fade. Previously only a phone-only
+   max-height existed, without overflow:hidden, so the text spilled over the
+   Read-more / Continue buttons on phones and was never clamped on desktop. */
+.hero .desc.collapsed {
+  max-height: calc(1.65em * 5); overflow: hidden;
+  -webkit-mask-image: linear-gradient(#000 65%, transparent);
+  mask-image: linear-gradient(#000 65%, transparent);
+}
