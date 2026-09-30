@@ -656,7 +656,25 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   background: var(--surface); border-bottom: 1px solid var(--border);
   padding: 10px 16px; box-shadow: var(--shadow);
 }
-.reader-toolbar .ttl { flex: 1; font-size: 12.5px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* title doubles as the link back to the novel page */
+.reader-toolbar .ttl { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-decoration: none; padding: 4px 6px; border-radius: 7px; }
+.reader-toolbar .ttl:hover { background: var(--surface-2); text-decoration: none; }
+.reader-toolbar .ttl .ttl-ch { margin-left: 8px; font-variant-numeric: tabular-nums; }
+.reader-toolbar .more-pop { min-width: 230px; }
+/* the menu lives inside a .tool-group — undo its compact centered button style */
+.reader-toolbar .tool-group .more-item { justify-content: flex-start; width: 100%; height: auto; padding: 8px 10px; gap: 10px; color: var(--text); font-size: 13.5px; text-decoration: none; }
+.reader-toolbar .tool-group .more-item:hover { background: var(--surface-2); color: var(--text); }
+.reader-toolbar .tool-group .more-item.danger { color: var(--danger); }
+.reader-toolbar .more-item .ic { color: var(--text-dim); }
+.reader-toolbar .more-item.danger { font-size: 13px; }
+.mi-glyph { width: 16px; text-align: center; font-size: 12px; color: var(--text-dim); font-weight: 700; }
+.mi-key { margin-left: auto; font-size: 10.5px; color: var(--text-dim); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; font-family: var(--font-ui); }
+.more-narrow { display: none !important; }
+.flip-x { transform: scaleX(-1); }
+.aa { font-family: Georgia, serif; font-size: 14px; font-weight: 600; letter-spacing: -.3px; }
+.tool-group button:disabled { opacity: .35; cursor: default; background: transparent; }
+.sp-val { font-size: 12px; color: var(--text-dim); min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; }
 .reader-toolbar .ttl strong { color: var(--text); }
 .tool-group { display: inline-flex; align-items: center; gap: 2px; border: 1px solid var(--border); border-radius: 9px; padding: 2px; background: var(--surface-2); box-shadow: inset 0 1px 2px rgba(28,25,18,.05); }
 .tool-group button, .tool-group a {
@@ -968,14 +986,20 @@ body.toolbar-hidden .reader-toolbar { transform: translateY(-100%); opacity: 0; 
   /* chapter rows tighter */
   .chapter-item { padding: 8px 10px; gap: 8px; }
   .chapter-item .ttl { font-size: 13px; }
-  /* reader toolbar: single compact scrolling row on phones */
-  .reader-toolbar { gap: 4px; padding: 4px 6px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
-  .reader-toolbar::-webkit-scrollbar { display: none; }
-  .reader-toolbar .ttl { flex: 0 1 42%; min-width: 0; font-size: 11px; margin-right: auto; }
+  /* reader toolbar on phones: one row that FITS — no hidden sideways scroll.
+     Search/bookmarks/bilingual move into the ⋯ menu; the ✓ badge is dropped
+     (untranslated chapters still show the Translate button). */
+  .reader-toolbar { gap: 6px; padding: 6px 8px; flex-wrap: nowrap; }
+  .reader-toolbar .ttl { font-size: 11.5px; padding: 4px 2px; }
+  .reader-toolbar .ttl strong { display: block; overflow: hidden; text-overflow: ellipsis; }
+  .reader-toolbar .ttl .ttl-ch { margin-left: 0; display: block; font-size: 10.5px; }
   .reader-toolbar > .tool-group, .reader-toolbar > .btn, .reader-toolbar > .badge { flex: 0 0 auto; }
+  .reader-toolbar .tb-wide { display: none; }
+  .reader-toolbar .more-narrow { display: flex !important; }
+  .reader-toolbar .more-divider.more-narrow { display: block !important; }
+  .reader-toolbar .tool-group .more-item { padding: 11px 12px; height: auto; }
   .tool-group button, .tool-group a { height: 40px; min-width: 40px; padding: 0 8px; }
-  .tg-label { display: none; }        /* icons-only theme switcher on phones */
-  .tg-nav .nav-label { display: none; }
+  .tg-nav button, .tg-nav a { min-width: 36px; padding: 0 6px; }
   .btn.small { padding: 0 10px; height: 40px; }
   .recap-hint { display: none; }      /* keep "Previously on…" from wrapping */
   /* end-of-chapter card actions wrap nicely */
@@ -1217,4 +1241,20 @@ body, .topbar, .reader-toolbar, .toc-drawer, .settings-pop, .sel-pop, .recap-car
   max-height: calc(1.65em * 5); overflow: hidden;
   -webkit-mask-image: linear-gradient(#000 65%, transparent);
   mask-image: linear-gradient(#000 65%, transparent);
+}
+
+/* very narrow phones (≤380px): give the reader title a little more room */
+@media (max-width: 380px) {
+  .reader-toolbar { gap: 4px; padding: 6px; }
+  .reader-toolbar > .btn.small { padding: 0 8px; font-size: 12px; }
+  .reader-toolbar .tg-nav button, .reader-toolbar .tg-nav a { min-width: 32px; padding: 0 4px; }
+  .reader-toolbar .tool-group button { min-width: 36px; padding: 0 6px; }
+}
+@media (max-width: 600px) {
+  .settings-pop { top: 68px; }          /* clear the taller two-line phone toolbar */
+  .settings-pop .sp-width { display: none; }  /* text already fills a phone screen */
+}
+/* touch-only devices have no keyboard: hide shortcut hints/entries */
+@media (hover: none) and (pointer: coarse) {
+  .kb-only, .mi-key { display: none !important; }
 }
