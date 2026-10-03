@@ -13,6 +13,7 @@ from typing import List, Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from database import get_db_session
 from models import Chapter, Novel, NovelMemory
@@ -421,6 +422,7 @@ async def update_memory(
             item["locked"] = bool(item.get("locked"))
             cleaned.append(item)
         mem.glossary_entries = _dump_glossary(cleaned)
+        flag_modified(mem, "glossary_entries")
     mem.updated_at = datetime.utcnow()
     db.commit()
     return {"status": "ok"}
@@ -667,6 +669,12 @@ async def translate_ahead(novel_id: int, after_chapter: int,
     novel = db.query(Novel).filter(Novel.id == novel_id).first()
     if not novel:
         raise HTTPException(status_code=404, detail="Novel not found")
+    next_ch = db.query(Chapter).filter(
+        Chapter.novel_id == novel_id,
+        Chapter.chapter_number == after_chapter + 1,
+    ).first()
+    if next_ch and next_ch.is_translated:
+        return {"status": "none", "pending": 0}
     existing = db.query(Chapter).filter(
         Chapter.novel_id == novel_id, Chapter.chapter_number > after_chapter,
         Chapter.is_translated == False).count()

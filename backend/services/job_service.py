@@ -12,6 +12,7 @@ import time
 from typing import List, Optional
 
 from sqlalchemy import update
+from sqlalchemy.orm.attributes import flag_modified
 from models import BatchJob, Chapter, Novel
 from translator import RelayAuthError, get_translator
 
@@ -305,14 +306,17 @@ def translate_novel_meta_bg(novel_id: int):
         novel = db.query(Novel).filter(Novel.id == novel_id).first()
         if not novel:
             return
-        if novel.title_translated and novel.description_translated:
+        translate_title = not novel.title_translated and bool(novel.title)
+        translate_desc = not novel.description_translated and bool(novel.description)
+        total = (1 if translate_title else 0) + (1 if translate_desc else 0)
+        if total == 0:
             return
         translator = _get_translator_instance()
         if translator is None:
             logger.error(f"translate-meta aborted (novel {novel_id}): no API key configured (set FALLBACK_API_KEY in Settings)")
             return
         set_batch_fn = _get_main_attr("_set_batch", _set_batch)
-        if not set_batch_fn(novel_id, "meta", 2):
+        if not set_batch_fn(novel_id, "meta", total):
             return
         outcome = None
         stop_req_fn = _get_main_attr("_batch_stop_requested", _batch_stop_requested)
@@ -322,7 +326,7 @@ def translate_novel_meta_bg(novel_id: int):
         else:
             try:
                 session_id = f"nyaa-novel-{novel_id}"
-                if not novel.title_translated and novel.title:
+                if translate_title:
                     try:
                         t = translator.translate_short(
                             novel.title, novel.original_language, novel.target_language,
@@ -334,7 +338,7 @@ def translate_novel_meta_bg(novel_id: int):
                         novel.title_translated = t.strip()
                         bump_fn(novel_id, label="Novel title")
                         db.commit()
-                if not novel.description_translated and novel.description:
+                if translate_desc:
                     try:
                         d = translator.translate_short(
                             novel.description, novel.original_language, novel.target_language,
@@ -354,7 +358,13 @@ def translate_novel_meta_bg(novel_id: int):
                 db.rollback()
                 outcome = f"Translation failed: {str(e)[:120]}"
         finish_fn = _get_main_attr("_finish_batch", _finish_batch)
-        finish_fn(novel_id, outcome or "Title & synopsis translated")
+        if translate_title and translate_desc:
+            default_label = "Title & synopsis translated"
+        elif translate_title:
+            default_label = "Title translated"
+        else:
+            default_label = "Synopsis translated"
+        finish_fn(novel_id, outcome or default_label)
     finally:
         db.close()
 
@@ -871,7 +881,8 @@ def translate_memory_bg(novel_id: int):
                         src, novel.original_language, novel.target_language)
                 if t and t.strip() and t.strip() != src:
                     entries[idx]["translated"] = t.strip()
-                    mem.glossary_entries = _dump_glossary(entries)
+                    mem.glossary_entries = _dump_glossary(list(entries))
+                    flag_modified(mem, "glossary_entries")
                     db.commit()
                 done += 1
                 bump_fn(novel_id, label=f"{entry_type.title()}: {src}")
@@ -943,6 +954,12 @@ def translate_ahead_bg(novel_id: int, after_chapter: int, count: int = 5):
     try:
         novel = db.query(Novel).filter(Novel.id == novel_id).first()
         if not novel:
+            return
+        next_ch = db.query(Chapter).filter(
+            Chapter.novel_id == novel_id,
+            Chapter.chapter_number == after_chapter + 1,
+        ).first()
+        if next_ch and next_ch.is_translated:
             return
         next_chs = (db.query(Chapter)
                     .filter(Chapter.novel_id == novel_id,

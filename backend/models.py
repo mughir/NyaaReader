@@ -36,6 +36,7 @@ class Novel(Base):
     diary_entries = relationship("DiaryEntry", cascade="all, delete-orphan", overlaps="novel")
     reading_progress = relationship("ReadingProgress", cascade="all, delete-orphan", overlaps="novel")
     batch_jobs = relationship("BatchJob", cascade="all, delete-orphan", overlaps="novel")
+    scraping_logs = relationship("ScrapingLog", cascade="all, delete-orphan", overlaps="novel")
 
 
 class Chapter(Base):
@@ -111,6 +112,8 @@ class ScrapingLog(Base):
     error_message = Column(Text)
     response_time = Column(Float)  # seconds
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    novel = relationship("Novel")
 
 
 class NovelMemory(Base):
