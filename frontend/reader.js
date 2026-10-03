@@ -77,6 +77,7 @@
       const autoFetch = ref(prefs.autoFetch !== false);
       const entityTooltips = ref(prefs.entityTooltips !== false);
       const settingsOpen = ref(false);
+      const moreOpen = ref(false);
       const busy = ref("");          // '', 'fetching', 'translating'
       const error = ref("");
       const pollTimer = ref(null);
@@ -618,7 +619,7 @@
         else if (e.key === "/") { e.preventDefault(); searchOpen.value = !searchOpen.value; }
         else if (e.key === "?") { helpOpen.value = !helpOpen.value; }
         else if (e.key === "Escape") {
-          helpOpen.value = false; tocOpen.value = false; searchOpen.value = false; settingsOpen.value = false; memOpen.value = false; bmOpen.value = false;
+          helpOpen.value = false; tocOpen.value = false; searchOpen.value = false; settingsOpen.value = false; moreOpen.value = false; memOpen.value = false; bmOpen.value = false;
           if (focusMode.value) { focusMode.value = false; prefs.focus = false; savePrefs(); document.body.classList.remove("reader-focus"); }
         }
         else if (e.key === "f") { toggleFocus(); }
@@ -858,9 +859,10 @@
         document.addEventListener("mouseup", onTextSelect);
         document.addEventListener("mousedown", (e) => {
           if (!e.target.closest(".sel-pop")) hideSelPop();
-          if (settingsOpen.value && !e.target.closest(".settings-pop") && !e.target.closest("[title*='Reading settings']")) {
+          if (settingsOpen.value && !e.target.closest(".settings-pop") && !e.target.closest(".sp-trigger")) {
             settingsOpen.value = false;
           }
+          if (moreOpen.value && !e.target.closest(".more-menu")) moreOpen.value = false;
         });
         document.querySelector(".reader-main")?.addEventListener("touchstart", onTouchStart, { passive: true });
         document.querySelector(".reader-main")?.addEventListener("touchend", onTouchEnd, { passive: true });
@@ -889,7 +891,7 @@
         searchOpen, searchQuery, searchResults, searching,
         entityPop, hideEntityPop, entityTooltips,
         memOpen, memLoading, memSaving, memSaved, memError, gloss,
-        fontFamily, readerWidth, focusMode, settingsOpen, autoFetch,
+        fontFamily, readerWidth, focusMode, settingsOpen, moreOpen, autoFetch,
         chapterNumber, total, novelId, DATA,
         setTheme, bumpFont, bumpLine, setLineHeight, setParaMargin, toggleOrig, fetchContent, refetchConfirm, translate,
         setFontFamily, setWidth, toggleFocus, toggleAutoFetch,
@@ -913,43 +915,52 @@
   <!-- focus-mode exit (toolbar is hidden; mobile has no Esc) -->
   <button v-if="focusMode" class="focus-exit" @click="toggleFocus" title="Exit focus mode (Esc)">✕ Exit focus</button>
 
-  <!-- toolbar -->
+  <!-- toolbar: reading essentials only. Appearance lives in the Aa popover,
+       rare/risky actions (glossary, focus, re-fetch, shortcuts) in the ⋯ menu.
+       On phones the whole row fits without sideways scrolling; search,
+       bookmarks and bilingual move into ⋯ there (.tb-wide / .more-narrow). -->
   <div class="reader-toolbar">
     <div class="tool-group tg-nav">
       <button @click="tocOpen = true" title="Chapter list (T)" aria-label="Chapter list"><svg class="ic"><use href="#i-menu"/></svg></button>
-      <a :href="'/novel/' + novelId" title="Back to chapter list" aria-label="Back to chapter list"><svg class="ic"><use href="#i-book"/></svg><span class="nav-label">Chapters</span></a>
-      <a v-if="chapterNumber > 1" :href="'/novel/' + novelId + '/chapter/' + (chapterNumber-1)" title="Previous chapter (←/P)" aria-label="Previous chapter">←</a>
-      <a v-if="chapterNumber < total" :href="'/novel/' + novelId + '/chapter/' + (chapterNumber+1)" title="Next chapter (→/N)" aria-label="Next chapter">→</a>
+      <a v-if="chapterNumber > 1" :href="'/novel/' + novelId + '/chapter/' + (chapterNumber-1)" title="Previous chapter (←/P)" aria-label="Previous chapter"><svg class="ic"><use href="#i-arrow-left"/></svg></a>
+      <button v-else disabled aria-label="No previous chapter"><svg class="ic"><use href="#i-arrow-left"/></svg></button>
+      <a v-if="chapterNumber < total" :href="'/novel/' + novelId + '/chapter/' + (chapterNumber+1)" title="Next chapter (→/N)" aria-label="Next chapter"><svg class="ic flip-x"><use href="#i-arrow-left"/></svg></a>
+      <button v-else disabled aria-label="No next chapter"><svg class="ic flip-x"><use href="#i-arrow-left"/></svg></button>
     </div>
-    <div class="ttl"><strong>{{ novelTitleTranslated || DATA.novel_title }}</strong> · Ch {{ chapterNumber }}/{{ total }}</div>
+    <a class="ttl" :href="'/novel/' + novelId" title="Back to the novel page">
+      <strong>{{ novelTitleTranslated || DATA.novel_title }}</strong><span class="ttl-ch">Ch {{ chapterNumber }}/{{ total }}</span>
+    </a>
     <button v-if="!isTranslated && hasOriginal" class="btn small" @click="translate"
             :disabled="!!busy" :title="busy ? 'Translating…' : 'Translate chapter'">
       <span v-if="busy==='translating'" class="spinner"></span>
-      {{ busy==='translating' ? 'Translating…' : '🌐 Translate' }}
+      {{ busy==='translating' ? 'Translating…' : 'Translate' }}
     </button>
-    <span v-else-if="isTranslated" class="badge ok" title="Translated">✓</span>
-    <button v-if="hasOriginal" class="btn ghost small" @click="refetchConfirm"
-            :disabled="!!busy" title="Re-download this chapter from the source (fixes truncated/broken content)">⟳ Re-fetch</button>
-    <div class="tool-group">
-      <button @click="bumpFont(-1)" title="Smaller font">A−</button>
-      <button @click="bumpFont(1)" title="Bigger font">A+</button>
-    </div>
-    <div class="tool-group tg-theme">
-      <button @click="setTheme('light')" :class="{on: theme==='light'}" title="Light theme"><svg class="ic"><use href="#i-sun"/></svg><span class="tg-label">Light</span></button>
-      <button @click="setTheme('sepia')" :class="{on: theme==='sepia'}" title="Sepia theme"><svg class="ic"><use href="#i-book"/></svg><span class="tg-label">Sepia</span></button>
-      <button @click="setTheme('dark')" :class="{on: theme==='dark'}" title="Dark theme"><svg class="ic"><use href="#i-moon"/></svg><span class="tg-label">Dark</span></button>
-      <button @click="setTheme('oled')" :class="{on: theme==='oled'}" title="OLED Midnight theme"><span style="font-size:11px;font-weight:700">OLED</span></button>
-    </div>
-    <div class="tool-group">
-      <button @click="searchOpen = !searchOpen" :class="{on: searchOpen}" title="Search novel (/)" aria-label="Search novel" style="font-size:13px">🔍</button>
+    <span v-else-if="isTranslated" class="badge ok tb-wide" title="This chapter is translated">✓ Translated</span>
+    <div class="tool-group tb-wide">
+      <button @click="searchOpen = !searchOpen" :class="{on: searchOpen}" title="Search novel (/)" aria-label="Search novel"><svg class="ic"><use href="#i-search"/></svg></button>
       <button @click="toggleBookmarks" :class="{on: bmOpen}" title="Bookmarks & highlights (B)" aria-label="Bookmarks and highlights"><svg class="ic"><use href="#i-bookmark"/></svg></button>
-      <button @click="toggleMem" :class="{on: memOpen}" title="Edit glossary / memory" aria-label="Edit glossary and memory"><svg class="ic"><use href="#i-chip"/></svg></button>
       <button @click="toggleOrig" :class="{on: showOrig}" title="Show original text under translation" aria-label="Toggle original text">雙語</button>
     </div>
     <div class="tool-group">
-      <button @click="settingsOpen = !settingsOpen" :class="{on: settingsOpen}" title="Reading settings (S)" aria-label="Reading settings"><svg class="ic"><use href="#i-settings"/></svg></button>
-      <button @click="toggleFocus" :class="{on: focusMode}" title="Focus mode (F)" aria-label="Focus mode"><svg class="ic"><use href="#i-expand"/></svg></button>
-      <button @click="helpOpen = true" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+      <button class="sp-trigger" @click="settingsOpen = !settingsOpen; moreOpen = false" :class="{on: settingsOpen}" title="Text & theme (S)" aria-label="Text and theme settings" :aria-expanded="settingsOpen"><span class="aa">Aa</span></button>
+      <span class="more-menu">
+        <button @click="moreOpen = !moreOpen; settingsOpen = false" :class="{on: moreOpen}" title="More actions" aria-label="More actions" aria-haspopup="menu" :aria-expanded="moreOpen">⋯</button>
+        <div v-if="moreOpen" class="more-pop" role="menu" @click="moreOpen = false">
+          <button class="more-item more-narrow" role="menuitem" @click="searchOpen = true"><svg class="ic"><use href="#i-search"/></svg> Search novel</button>
+          <button class="more-item more-narrow" role="menuitem" @click="toggleBookmarks"><svg class="ic"><use href="#i-bookmark"/></svg> Bookmarks & highlights</button>
+          <button class="more-item more-narrow" role="menuitem" @click="toggleOrig"><span class="mi-glyph">雙</span> {{ showOrig ? 'Hide' : 'Show' }} original text</button>
+          <div class="more-divider more-narrow"></div>
+          <button class="more-item" role="menuitem" @click="toggleMem"><svg class="ic"><use href="#i-chip"/></svg> Glossary & AI memory</button>
+          <button class="more-item" role="menuitem" @click="toggleFocus"><svg class="ic"><use href="#i-expand"/></svg> Focus mode <kbd class="mi-key">F</kbd></button>
+          <a class="more-item" role="menuitem" :href="'/novel/' + novelId"><svg class="ic"><use href="#i-book"/></svg> Novel page</a>
+          <button class="more-item kb-only" role="menuitem" @click="helpOpen = true"><span class="mi-glyph">?</span> Keyboard shortcuts <kbd class="mi-key">?</kbd></button>
+          <template v-if="hasOriginal">
+            <div class="more-divider"></div>
+            <button class="more-item danger" role="menuitem" @click="refetchConfirm" :disabled="!!busy"
+                    title="Re-download this chapter from the source (fixes truncated/broken content)">⟳ Re-fetch from source…</button>
+          </template>
+        </div>
+      </span>
     </div>
   </div>
 
@@ -957,7 +968,22 @@
   <div class="progress-track"><div class="progress-fill" :style="{width: scrollPct + '%'}"></div></div>
 
   <!-- settings popover -->
-  <div v-if="settingsOpen" class="settings-pop">
+  <div v-if="settingsOpen" class="settings-pop" role="dialog" aria-label="Text and theme">
+    <div class="sp-row"><label>Size</label>
+      <div class="tool-group">
+        <button @click="bumpFont(-1)" title="Smaller text" aria-label="Smaller text">A−</button>
+        <span class="sp-val">{{ fontSize }}px</span>
+        <button @click="bumpFont(1)" title="Bigger text" aria-label="Bigger text">A+</button>
+      </div>
+    </div>
+    <div class="sp-row"><label>Theme</label>
+      <div class="tool-group tg-theme" role="group" aria-label="Theme">
+        <button @click="setTheme('light')" :class="{on: theme==='light'}" title="Light" aria-label="Light theme"><svg class="ic"><use href="#i-sun"/></svg></button>
+        <button @click="setTheme('sepia')" :class="{on: theme==='sepia'}" title="Sepia" aria-label="Sepia theme"><svg class="ic"><use href="#i-book"/></svg></button>
+        <button @click="setTheme('dark')" :class="{on: theme==='dark'}" title="Dark" aria-label="Dark theme"><svg class="ic"><use href="#i-moon"/></svg></button>
+        <button @click="setTheme('oled')" :class="{on: theme==='oled'}" title="OLED black" aria-label="OLED black theme"><svg class="ic"><use href="#i-moon-star"/></svg></button>
+      </div>
+    </div>
     <div class="sp-row"><label>Font</label>
       <select :value="fontFamily" @change="setFontFamily($event.target.value)" style="height:30px;padding:0 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2);color:var(--text);font-size:12px">
         <option value="literata">📖 Literata (Book Serif)</option>
@@ -978,7 +1004,7 @@
         <button :class="{on: paraMargin==='1.6em'}" @click="setParaMargin('1.6em')">Wide</button>
       </div>
     </div>
-    <div class="sp-row"><label>Width</label>
+    <div class="sp-row sp-width"><label>Width</label>
       <input type="range" min="560" max="1000" step="20" :value="readerWidth" @input="setWidth(+$event.target.value)">
       <span class="muted" style="font-size:11px">{{ readerWidth }}px</span>
     </div>
@@ -986,7 +1012,7 @@
       <button class="toggle" :class="{on: autoFetch}" @click="toggleAutoFetch" title="Prefetch & translate the next raw chapters while you read">{{ autoFetch ? 'On' : 'Off' }}</button>
       <span class="muted" style="font-size:11px">prefetch raw chapters</span>
     </div>
-    <div class="sp-row"><label>Shortcuts</label><span class="muted" style="font-size:11px">← → Ch · J/K Scroll · / Search · S Settings · ? Help</span></div>
+    <div class="sp-row kb-only"><label>Shortcuts</label><button class="btn ghost small" @click="settingsOpen = false; helpOpen = true">Show all (?)</button></div>
   </div>
 
   <main class="reader-main" :style="{ fontSize: fontSize + 'px', lineHeight: lineHeight, maxWidth: readerWidth + 'px', '--read-pm': paraMargin }">
@@ -1225,7 +1251,8 @@
         <div class="sc-item"><span>Focus Mode</span><kbd class="sc-key">F</kbd></div>
         <div class="sc-item"><span>Table of Contents</span><kbd class="sc-key">T</kbd></div>
         <div class="sc-item"><span>Bookmarks Drawer</span><kbd class="sc-key">B</kbd></div>
-        <div class="sc-item"><span>Reader Settings</span><kbd class="sc-key">S</kbd></div>
+        <div class="sc-item"><span>Text & Theme</span><kbd class="sc-key">S</kbd></div>
+        <div class="sc-item"><span>Search Novel</span><kbd class="sc-key">/</kbd></div>
         <div class="sc-item"><span>Close Menus</span><kbd class="sc-key">Esc</kbd></div>
         <div class="sc-item"><span>Shortcut Guide</span><kbd class="sc-key">?</kbd></div>
       </div>
