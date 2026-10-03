@@ -977,11 +977,11 @@
       </div>
     </div>
     <div class="sp-row"><label>Theme</label>
-      <div class="tool-group tg-theme">
-        <button @click="setTheme('light')" :class="{on: theme==='light'}" title="Light"><svg class="ic"><use href="#i-sun"/></svg></button>
-        <button @click="setTheme('sepia')" :class="{on: theme==='sepia'}" title="Sepia"><svg class="ic"><use href="#i-book"/></svg></button>
-        <button @click="setTheme('dark')" :class="{on: theme==='dark'}" title="Dark"><svg class="ic"><use href="#i-moon"/></svg></button>
-        <button @click="setTheme('oled')" :class="{on: theme==='oled'}" title="OLED black" style="font-size:11px;font-weight:700">OLED</button>
+      <div class="tool-group tg-theme" role="group" aria-label="Theme">
+        <button @click="setTheme('light')" :class="{on: theme==='light'}" title="Light" aria-label="Light theme"><svg class="ic"><use href="#i-sun"/></svg></button>
+        <button @click="setTheme('sepia')" :class="{on: theme==='sepia'}" title="Sepia" aria-label="Sepia theme"><svg class="ic"><use href="#i-book"/></svg></button>
+        <button @click="setTheme('dark')" :class="{on: theme==='dark'}" title="Dark" aria-label="Dark theme"><svg class="ic"><use href="#i-moon"/></svg></button>
+        <button @click="setTheme('oled')" :class="{on: theme==='oled'}" title="OLED black" aria-label="OLED black theme"><svg class="ic"><use href="#i-moon-star"/></svg></button>
       </div>
     </div>
     <div class="sp-row"><label>Font</label>

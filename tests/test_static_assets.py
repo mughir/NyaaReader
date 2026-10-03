@@ -62,3 +62,31 @@ def test_pages_render(client):
                 "/novel/%d/chapter/1" % novel_id):
         r = client.get(path)
         assert r.status_code == 200, path
+
+
+def test_all_frontend_icons_are_defined_in_sprite():
+    """Any <use href="#i-..."> icon in frontend scripts/templates must exist in icons.svg."""
+    import re
+    with open(os.path.join(_FRONTEND, "icons.svg"), encoding="utf-8") as fh:
+        sprite = fh.read()
+    defined = set(re.findall(r'id="(i-[^"]+)"', sprite))
+
+    for fname in os.listdir(_FRONTEND):
+        if fname.endswith((".js", ".html")):
+            with open(os.path.join(_FRONTEND, fname), encoding="utf-8") as fh:
+                content = fh.read()
+            used = set(re.findall(r'href="#(i-[^"]+)"', content))
+            missing = used - defined
+            assert not missing, f"{fname} references undefined icons in icons.svg: {missing}"
+
+
+def test_reader_theme_buttons_all_have_icons():
+    """All reader themes (including oled) must have icon buttons in the theme picker."""
+    import re
+    with open(os.path.join(_FRONTEND, "reader.js"), encoding="utf-8") as fh:
+        src = fh.read()
+    theme_calls = re.findall(r'<button [^>]*@click="setTheme\(\'([^\']+)\'\)"[^>]*>(.*?)</button>', src, re.DOTALL)
+    assert len(theme_calls) == 4, f"Expected 4 theme buttons, found {len(theme_calls)}"
+    for theme_name, btn_body in theme_calls:
+        assert "<svg" in btn_body and 'href="#i-' in btn_body, f"Theme '{theme_name}' button missing svg icon: {btn_body}"
+
