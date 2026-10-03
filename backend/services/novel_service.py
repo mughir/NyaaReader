@@ -366,8 +366,6 @@ async def fetch_chapters_range(novel_id: int, start: int, count: int, do_transla
             Chapter.chapter_number < start + count,
         ).order_by(Chapter.chapter_number).all()
 
-        translator = _get_translator_instance() if do_translate else None
-
         scraper = None
         first_url = chapters[0].source_url if chapters else None
         if first_url:
@@ -394,38 +392,27 @@ async def fetch_chapters_range(novel_id: int, start: int, count: int, do_transla
 
                     chapter.original_content = ch_data.content
                     chapter.word_count = ch_data.word_count
+                    db.commit()
 
                     await asyncio.sleep(delay)
 
-                    if translator:
-                        result = await asyncio.to_thread(
-                            translator.translate_chapter,
-                            ch_data.content,
-                            novel.original_language,
-                            novel.target_language,
-                            "balanced",
-                        )
-                        if result.success:
-                            chapter.translated_content = result.translated_text
-                            chapter.is_translated = True
-                            chapter.translated_word_count = result.output_tokens * 4
-                            chapter.translation_model = result.model_used
-                            chapter.translation_cost = result.estimated_cost
-                            chapter.last_error = ""
-                            if chapter.title and not chapter.title_translated:
-                                try:
-                                    t = await asyncio.to_thread(
-                                        translator.translate_short,
-                                        chapter.title, novel.original_language, novel.target_language
-                                    )
-                                    if t and t.strip():
-                                        chapter.title_translated = t.strip()
-                                except Exception:
-                                    pass
-                        else:
-                            chapter.last_error = getattr(result, "error", "Translation failed")[:500]
-
-                    db.commit()
+                    if do_translate:
+                        try:
+                            tr_fn = _get_main_attr("_translate_chapter", _translate_chapter)
+                            await asyncio.to_thread(tr_fn, db, chapter, "balanced", False)
+                        except RelayAuthError as e:
+                            chapter.last_error = str(e)[:500]
+                            db.commit()
+                            logger.error(f"fetch_chapters_range: relay auth error for ch {chapter.chapter_number}: {e}")
+                            break
+                        except HTTPException as e:
+                            chapter.last_error = str(e.detail)[:500]
+                            db.commit()
+                            logger.warning(f"fetch_chapters_range: translation of ch {chapter.chapter_number} failed: {e.detail}")
+                        except Exception as e:
+                            chapter.last_error = str(e)[:500]
+                            db.commit()
+                            logger.warning(f"fetch_chapters_range: translation of ch {chapter.chapter_number} failed: {e}")
                 except Exception as e:
                     logger.warning(f"fetch_chapters_range: chapter {chapter.chapter_number} failed: {e}")
                     db.rollback()

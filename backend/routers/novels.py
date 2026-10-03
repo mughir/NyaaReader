@@ -30,7 +30,13 @@ from services.export_service import (
     _generate_cover_svg,
     _safe_filename,
 )
-from services.job_service import _async_novel_lock, _batch_running, _launch_batch
+from services.job_service import (
+    _async_novel_lock,
+    _batch_cache,
+    _batch_running,
+    _launch_batch,
+    _request_batch_stop,
+)
 from services.novel_service import _create_novel_from_url, fetch_chapters_range
 
 logger = logging.getLogger("novel-reader.novels_router")
@@ -135,6 +141,28 @@ async def delete_novel(novel_id: int, db: Session = Depends(get_db_session)):
     novel = db.query(Novel).filter(Novel.id == novel_id).first()
     if not novel:
         raise HTTPException(status_code=404, detail="Novel not found")
+    # Stop any active batch job and clean up cache entry
+    stop_req_fn = _get_main_attr("_request_batch_stop", _request_batch_stop)
+    stop_req_fn(novel_id)
+    cache = _get_main_attr("_batch_cache", _batch_cache)
+    if cache is not None:
+        cache.pop(novel_id, None)
+
+    # Clean up disk artifacts (cover images and epub)
+    covers_dir = DATA_DIR / "covers"
+    if covers_dir.exists():
+        for f in covers_dir.glob(f"novel_{novel_id}.*"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+    try:
+        epub_file = _epub_path(novel)
+        if epub_file.exists():
+            epub_file.unlink()
+    except Exception as e:
+        logger.warning(f"Failed to delete epub for novel {novel_id}: {e}")
+
     db.delete(novel)
     db.commit()
     return {"status": "deleted"}
